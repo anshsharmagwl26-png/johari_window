@@ -26,6 +26,23 @@ export interface OpenSessionResult {
 }
 
 /**
+ * Ensures an active access token is retrieved, silently creating an anonymous session if needed.
+ */
+async function getClientAuthHeader(): Promise<string> {
+  if (!isSupabaseConfigured || !supabase) return '';
+  try {
+    let { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      const { data } = await supabase.auth.signInAnonymously();
+      session = data?.session ?? null;
+    }
+    return session?.access_token ? `Bearer ${session.access_token}` : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Creates an authenticated draft session.
  * Enforces Master Spec Phase A:
  * - Session starts in 'draft'.
@@ -52,12 +69,16 @@ export async function createSession(
     }
 
     if (isSupabaseConfigured && supabase) {
-      const {
+      let {
         data: { session: authSession },
       } = await supabase.auth.getSession();
 
       if (!authSession) {
-        return { session: null, error: new Error('Unauthorized: Please sign in as session owner.') };
+        const { data: anonData, error: anonErr } = await supabase.auth.signInAnonymously();
+        if (anonErr || !anonData?.session) {
+          return { session: null, error: new Error(anonErr?.message || 'Failed to establish anonymous owner session.') };
+        }
+        authSession = anonData.session;
       }
 
       const { data, error } = await supabase.rpc('rpc_owner_create_session', {
@@ -78,11 +99,14 @@ export async function createSession(
       return { session: data as unknown as Session, error: null };
     }
 
+    const authHeader = await getClientAuthHeader();
+
     // Server-side proxy call fallback (local / test mode)
     const res = await fetch('/api/sessions/create', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(authHeader ? { Authorization: authHeader } : {}),
       },
       body: JSON.stringify(params),
     });
@@ -191,15 +215,7 @@ export async function submitSelfAssessmentAndOpen(
       };
     }
 
-    let authHeader = '';
-    if (isSupabaseConfigured && supabase) {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session?.access_token) {
-        authHeader = `Bearer ${session.access_token}`;
-      }
-    }
+    const authHeader = await getClientAuthHeader();
 
     const payload = {
       adjective_ids: uniqueIds,
@@ -353,15 +369,7 @@ export async function reissueInvite(
   oldInviteId: string
 ): Promise<{ invite: ReissueInviteResult | null; error: Error | null }> {
   try {
-    let authHeader = '';
-    if (isSupabaseConfigured && supabase) {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session?.access_token) {
-        authHeader = `Bearer ${session.access_token}`;
-      }
-    }
+    const authHeader = await getClientAuthHeader();
 
     const payload = {
       session_id: sessionId,
@@ -411,15 +419,7 @@ export async function bulkReissueUnusedInvites(
   sessionId: string
 ): Promise<{ result: BulkReissueResult | null; error: Error | null }> {
   try {
-    let authHeader = '';
-    if (isSupabaseConfigured && supabase) {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session?.access_token) {
-        authHeader = `Bearer ${session.access_token}`;
-      }
-    }
+    const authHeader = await getClientAuthHeader();
 
     const payload = {
       session_id: sessionId,
@@ -479,15 +479,7 @@ export async function finalizeSession(
   sessionId: string
 ): Promise<{ result: FinalizeSessionResult | null; error: Error | null }> {
   try {
-    let authHeader = '';
-    if (isSupabaseConfigured && supabase) {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session?.access_token) {
-        authHeader = `Bearer ${session.access_token}`;
-      }
-    }
+    const authHeader = await getClientAuthHeader();
 
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.rpc('rpc_owner_finalize_session', {
@@ -572,15 +564,7 @@ export async function fetchSessionDashboard(
   sessionId: string
 ): Promise<{ metrics: DashboardMetrics | null; error: Error | null }> {
   try {
-    let authHeader = '';
-    if (isSupabaseConfigured && supabase) {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session?.access_token) {
-        authHeader = `Bearer ${session.access_token}`;
-      }
-    }
+    const authHeader = await getClientAuthHeader();
 
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.rpc('rpc_owner_get_dashboard', {
@@ -621,15 +605,7 @@ export async function fetchSessionResults(
   sessionId: string
 ): Promise<{ snapshot: FinalizedResultsSnapshot | null; error: Error | null }> {
   try {
-    let authHeader = '';
-    if (isSupabaseConfigured && supabase) {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session?.access_token) {
-        authHeader = `Bearer ${session.access_token}`;
-      }
-    }
+    const authHeader = await getClientAuthHeader();
 
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.rpc('rpc_owner_get_results', {

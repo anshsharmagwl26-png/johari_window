@@ -41,7 +41,7 @@ describe('Route Skeletons & Auth Guard Behavior', () => {
     expect(screen.getByPlaceholderText(/43-character base64url token/i)).toBeDefined();
   });
 
-  it('visibly labels OwnerAuthGuard as a non-functional stub pending Stage 2 when Supabase is not configured', () => {
+  it('allows seamless access to CreateSessionPage via OwnerAuthGuard without login modal or stub banner', () => {
     render(
       <AuthProvider>
         <MemoryRouter initialEntries={['/create']}>
@@ -59,14 +59,11 @@ describe('Route Skeletons & Auth Guard Behavior', () => {
       </AuthProvider>
     );
 
-    // Verify explicit Stage 1 stub banner is visible
-    expect(screen.getByRole('alert', { name: /Owner Auth Guard Stub Notice/i })).toBeDefined();
-    expect(screen.getByText(/\[Stage 1 Non-Functional Stub\]/i)).toBeDefined();
-    expect(
-      screen.getByText(/Owner Authentication Pending Stage 2 Configuration/i)
-    ).toBeDefined();
+    // Verify stub banner is NOT rendered
+    expect(screen.queryByRole('alert', { name: /Owner Auth Guard Stub Notice/i })).toBeNull();
+    expect(screen.queryByText(/\[Stage 1 Non-Functional Stub\]/i)).toBeNull();
 
-    // Verify that the page shell itself is accessible for structural layout verification
+    // Verify CreateSessionPage is rendered directly
     expect(screen.getByText(/Create New Assessment/i)).toBeDefined();
     expect(screen.getByLabelText(/Subject Name \(You\)/i)).toBeDefined();
   });

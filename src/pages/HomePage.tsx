@@ -1,10 +1,7 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../components/common/Button';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../components/common/Card';
-import { AdjectiveChip } from '../components/common/AdjectiveChip';
-import { SelectionCounter } from '../components/common/SelectionCounter';
-import { CANONICAL_ADJECTIVES } from '../data/adjectives';
+import { Card, CardHeader, CardTitle, CardDescription } from '../components/common/Card';
 import {
   LayoutGrid,
   Users,
@@ -19,15 +16,6 @@ import {
 } from 'lucide-react';
 
 export const HomePage: React.FC = () => {
-  // Interactive test preview for the design system adjective chips
-  const [selectedChips, setSelectedChips] = useState<string[]>(['able', 'clever', 'kind']);
-
-  const handleToggle = (id: string) => {
-    setSelectedChips((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : prev.length < 7 ? [...prev, id] : prev
-    );
-  };
-
   return (
     <div className="space-y-16 pb-16">
       {/* Hero Section */}
@@ -150,37 +138,6 @@ export const HomePage: React.FC = () => {
             </CardHeader>
           </Card>
         </div>
-      </section>
-
-      {/* Interactive Design System Preview (Testing Component Integration) */}
-      <section className="max-w-4xl mx-auto px-4">
-        <Card className="p-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100 mb-6">
-            <div>
-              <h3 className="text-lg font-bold text-slate-900">Design System Component Verification</h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Live accessible adjective chips with <code>aria-pressed</code>, keyboard focus, and counter states.
-              </p>
-            </div>
-            <SelectionCounter currentCount={selectedChips.length} min={5} max={7} />
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            {CANONICAL_ADJECTIVES.slice(0, 15).map((adj) => (
-              <AdjectiveChip
-                key={adj.id}
-                id={adj.id}
-                label={adj.adjective}
-                isSelected={selectedChips.includes(adj.id)}
-                disabled={selectedChips.length >= 7 && !selectedChips.includes(adj.id)}
-                onToggle={handleToggle}
-              />
-            ))}
-          </div>
-          <p className="text-xs text-slate-400 mt-4 italic">
-            Displaying the first 15 of 55 canonical adjectives in this preview section.
-          </p>
-        </Card>
       </section>
     </div>
   );

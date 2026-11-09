@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { User, Session } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
@@ -7,8 +7,7 @@ interface AuthContextType {
   session: Session | null;
   loading: boolean;
   isConfigured: boolean;
-  signInWithMagicLink: (email: string) => Promise<{ error: Error | null; message?: string }>;
-  verifyOtp: (email: string, token: string) => Promise<{ error: Error | null }>;
+  ensureAnonymousSession: () => Promise<{ session: Session | null; error: Error | null }>;
   signOut: () => Promise<void>;
 }
 
@@ -17,15 +16,47 @@ const AuthContext = createContext<AuthContextType>({
   session: null,
   loading: false,
   isConfigured: isSupabaseConfigured,
-  signInWithMagicLink: async () => ({ error: new Error('Auth not configured') }),
-  verifyOtp: async () => ({ error: new Error('Auth not configured') }),
+  ensureAnonymousSession: async () => ({ session: null, error: new Error('Auth not configured') }),
   signOut: async () => {},
 });
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState<boolean>(isSupabaseConfigured);
+  const [loading, setLoading] = useState<boolean>(true);
+
+  // Silently ensures an authenticated session exists using Supabase Anonymous Auth
+  const ensureAnonymousSession = useCallback(async (): Promise<{ session: Session | null; error: Error | null }> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return { session: null, error: new Error('Supabase client is not configured. Please check environment variables.') };
+    }
+
+    try {
+      // 1. Check existing session in storage/memory
+      const { data: { session: existingSession } } = await supabase.auth.getSession();
+      if (existingSession?.user) {
+        setSession(existingSession);
+        setUser(existingSession.user);
+        return { session: existingSession, error: null };
+      }
+
+      // 2. Sign in anonymously
+      const { data, error } = await supabase.auth.signInAnonymously();
+      if (error) {
+        return { session: null, error: new Error(error.message) };
+      }
+
+      if (data?.session) {
+        setSession(data.session);
+        setUser(data.session.user);
+        return { session: data.session, error: null };
+      }
+
+      return { session: null, error: new Error('Failed to obtain anonymous session.') };
+    } catch (err) {
+      return { session: null, error: err as Error };
+    }
+  }, []);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
@@ -33,19 +64,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    // Fetch initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      setLoading(false);
+    // 1. Inspect existing session
+    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
+      if (currentSession?.user) {
+        setSession(currentSession);
+        setUser(currentSession.user);
+        setLoading(false);
+      } else {
+        const client = supabase;
+        if (client) {
+          client.auth.signInAnonymously().then(({ data, error }) => {
+            if (data?.session) {
+              setSession(data.session);
+              setUser(data.session.user);
+            }
+            if (error) {
+              console.warn('Anonymous sign-in could not be established on mount:', error.message);
+            }
+            setLoading(false);
+          }).catch(() => {
+            setLoading(false);
+          });
+        } else {
+          setLoading(false);
+        }
+      }
     });
 
-    // Listen to auth changes
+    // 2. Listen to auth changes
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      setUser(session?.user ?? null);
+    } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+      setUser(newSession?.user ?? null);
       setLoading(false);
     });
 
@@ -53,47 +104,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       subscription.unsubscribe();
     };
   }, []);
-
-  const signInWithMagicLink = async (email: string) => {
-    if (!isSupabaseConfigured || !supabase) {
-      return {
-        error: new Error('Supabase is not configured. Stage 1 operates in stub mode pending Stage 2 credentials.'),
-      };
-    }
-
-    try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: {
-          emailRedirectTo: `${window.location.origin}/`,
-        },
-      });
-      if (error) return { error };
-      return { error: null, message: 'Magic link sent to your email.' };
-    } catch (err) {
-      return { error: err as Error };
-    }
-  };
-
-  const verifyOtp = async (email: string, token: string) => {
-    if (!isSupabaseConfigured || !supabase) {
-      return {
-        error: new Error('Supabase is not configured. Stage 1 operates in stub mode pending Stage 2 credentials.'),
-      };
-    }
-
-    try {
-      const { error } = await supabase.auth.verifyOtp({
-        email,
-        token,
-        type: 'email',
-      });
-      if (error) return { error };
-      return { error: null };
-    } catch (err) {
-      return { error: err as Error };
-    }
-  };
 
   const signOut = async () => {
     if (supabase) {
@@ -110,8 +120,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         session,
         loading,
         isConfigured: isSupabaseConfigured,
-        signInWithMagicLink,
-        verifyOtp,
+        ensureAnonymousSession,
         signOut,
       }}
     >
