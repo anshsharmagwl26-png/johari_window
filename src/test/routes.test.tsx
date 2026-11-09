@@ -41,7 +41,7 @@ describe('Route Skeletons & Auth Guard Behavior', () => {
     expect(screen.getByPlaceholderText(/43-character base64url token/i)).toBeDefined();
   });
 
-  it('allows seamless access to CreateSessionPage via OwnerAuthGuard without login modal or stub banner', () => {
+  it('allows seamless access to CreateSessionPage via OwnerAuthGuard without login modal or stub banner', async () => {
     render(
       <AuthProvider>
         <MemoryRouter initialEntries={['/create']}>
@@ -63,8 +63,9 @@ describe('Route Skeletons & Auth Guard Behavior', () => {
     expect(screen.queryByRole('alert', { name: /Owner Auth Guard Stub Notice/i })).toBeNull();
     expect(screen.queryByText(/\[Stage 1 Non-Functional Stub\]/i)).toBeNull();
 
-    // Verify CreateSessionPage is rendered directly
-    expect(screen.getByText(/Create New Assessment/i)).toBeDefined();
-    expect(screen.getByLabelText(/Subject Name \(You\)/i)).toBeDefined();
+    // Verify CreateSessionPage is rendered once anonymous session initializes
+    const heading = await screen.findByText(/Create New Assessment/i);
+    expect(heading).toBeDefined();
+    expect(await screen.findByLabelText(/Subject Name \(You\)/i)).toBeDefined();
   });
 });

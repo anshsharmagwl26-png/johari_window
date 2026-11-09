@@ -2,6 +2,8 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import type { User, Session } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
+import { getOrInitOwnerSession } from '../lib/session-service';
+
 interface AuthContextType {
   user: User | null;
   session: Session | null;
@@ -27,81 +29,64 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Silently ensures an authenticated session exists using Supabase Anonymous Auth
   const ensureAnonymousSession = useCallback(async (): Promise<{ session: Session | null; error: Error | null }> => {
-    if (!isSupabaseConfigured || !supabase) {
-      return { session: null, error: new Error('Supabase client is not configured. Please check environment variables.') };
-    }
-
     try {
-      // 1. Check existing session in storage/memory
-      const { data: { session: existingSession } } = await supabase.auth.getSession();
-      if (existingSession?.user) {
-        setSession(existingSession);
-        setUser(existingSession.user);
-        return { session: existingSession, error: null };
+      await getOrInitOwnerSession();
+      if (supabase) {
+        const { data: { session: existingSession } } = await supabase.auth.getSession();
+        if (existingSession) {
+          setSession(existingSession);
+          setUser(existingSession.user);
+          return { session: existingSession, error: null };
+        }
       }
-
-      // 2. Sign in anonymously
-      const { data, error } = await supabase.auth.signInAnonymously();
-      if (error) {
-        return { session: null, error: new Error(error.message) };
-      }
-
-      if (data?.session) {
-        setSession(data.session);
-        setUser(data.session.user);
-        return { session: data.session, error: null };
-      }
-
-      return { session: null, error: new Error('Failed to obtain anonymous session.') };
+      return { session: null, error: null };
     } catch (err) {
       return { session: null, error: err as Error };
     }
   }, []);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
-      setLoading(false);
-      return;
-    }
+    let isMounted = true;
 
-    // 1. Inspect existing session
-    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
-      if (currentSession?.user) {
-        setSession(currentSession);
-        setUser(currentSession.user);
-        setLoading(false);
-      } else {
-        const client = supabase;
-        if (client) {
-          client.auth.signInAnonymously().then(({ data, error }) => {
-            if (data?.session) {
-              setSession(data.session);
-              setUser(data.session.user);
-            }
-            if (error) {
-              console.warn('Anonymous sign-in could not be established on mount:', error.message);
-            }
-            setLoading(false);
-          }).catch(() => {
-            setLoading(false);
-          });
-        } else {
+    async function init() {
+      try {
+        await getOrInitOwnerSession();
+        if (supabase) {
+          const { data: { session: currentSession } } = await supabase.auth.getSession();
+          if (isMounted && currentSession) {
+            setSession(currentSession);
+            setUser(currentSession.user);
+          }
+        }
+      } catch (err) {
+        console.warn('Anonymous session could not be established on mount:', err);
+      } finally {
+        if (isMounted) {
           setLoading(false);
         }
       }
-    });
+    }
 
-    // 2. Listen to auth changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
-      setUser(newSession?.user ?? null);
-      setLoading(false);
-    });
+    init();
+
+    if (supabase) {
+      const {
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange((_event, newSession) => {
+        if (!isMounted) return;
+        setSession(newSession);
+        setUser(newSession?.user ?? null);
+        setLoading(false);
+      });
+
+      return () => {
+        isMounted = false;
+        subscription.unsubscribe();
+      };
+    }
 
     return () => {
-      subscription.unsubscribe();
+      isMounted = false;
     };
   }, []);
 

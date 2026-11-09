@@ -25,21 +25,108 @@ export interface OpenSessionResult {
   invites: IssuedInviteResult[];
 }
 
+let anonInitPromise: Promise<{ token: string; userId: string }> | null = null;
+
+const LOCAL_STORAGE_OWNER_ID_KEY = 'johari_owner_uid';
+const LOCAL_STORAGE_OWNER_TOKEN_KEY = 'johari_owner_jwt';
+
 /**
- * Ensures an active access token is retrieved, silently creating an anonymous session if needed.
+ * Retrieves or establishes a stable anonymous owner session.
+ * Initialized once, reused throughout the assessment lifecycle.
+ * Prevents multiple anonymous user churn and race conditions.
  */
-async function getClientAuthHeader(): Promise<string> {
-  if (!isSupabaseConfigured || !supabase) return '';
-  try {
-    let { data: { session } } = await supabase.auth.getSession();
-    if (!session?.access_token) {
-      const { data } = await supabase.auth.signInAnonymously();
-      session = data?.session ?? null;
-    }
-    return session?.access_token ? `Bearer ${session.access_token}` : '';
-  } catch {
-    return '';
+export async function getOrInitOwnerSession(): Promise<{ token: string; userId: string }> {
+  // If an init is already in flight, await the same promise
+  if (anonInitPromise) {
+    return anonInitPromise;
   }
+
+  anonInitPromise = (async () => {
+    // 1. Supabase configured mode: use real Supabase anonymous authentication
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data: { session: existingSession } } = await supabase.auth.getSession();
+        if (existingSession?.access_token && existingSession?.user?.id) {
+          // Check if token is expired or expiring in next 60 seconds
+          const expiresAt = existingSession.expires_at;
+          const nowSeconds = Math.floor(Date.now() / 1000);
+          if (expiresAt && expiresAt - nowSeconds < 60) {
+            const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+            if (!refreshErr && refreshed.session?.access_token) {
+              return {
+                token: refreshed.session.access_token,
+                userId: refreshed.session.user.id,
+              };
+            }
+          }
+          return {
+            token: existingSession.access_token,
+            userId: existingSession.user.id,
+          };
+        }
+
+        // No active session: initialize anonymous sign-in once
+        const { data: anonData, error: anonErr } = await supabase.auth.signInAnonymously();
+        if (anonErr) {
+          throw new Error(`Anonymous authentication failed: ${anonErr.message}`);
+        }
+        if (!anonData?.session?.access_token || !anonData?.session?.user?.id) {
+          throw new Error('Supabase did not return an access token for anonymous authentication.');
+        }
+
+        return {
+          token: anonData.session.access_token,
+          userId: anonData.session.user.id,
+        };
+      } catch (err) {
+        throw err;
+      }
+    }
+
+    // 2. Local fallback / mock mode (e.g. tests or direct Express server proxy)
+    // Maintain a stable persistent local owner ID and token in localStorage/memory
+    try {
+      let storedId = typeof window !== 'undefined' ? localStorage.getItem(LOCAL_STORAGE_OWNER_ID_KEY) : null;
+      let storedToken = typeof window !== 'undefined' ? localStorage.getItem(LOCAL_STORAGE_OWNER_TOKEN_KEY) : null;
+
+      if (!storedId || !storedToken) {
+        storedId = 'anon-owner-' + Math.random().toString(36).substring(2, 12);
+        storedToken = 'anon-token-' + storedId;
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(LOCAL_STORAGE_OWNER_ID_KEY, storedId);
+          localStorage.setItem(LOCAL_STORAGE_OWNER_TOKEN_KEY, storedToken);
+        }
+      }
+
+      return {
+        token: storedToken,
+        userId: storedId,
+      };
+    } catch {
+      const fallbackId = 'anon-owner-session';
+      return {
+        token: 'anon-token-' + fallbackId,
+        userId: fallbackId,
+      };
+    }
+  })().finally(() => {
+    // Reset singleton promise after completion so future token renewal can re-evaluate
+    anonInitPromise = null;
+  });
+
+  return anonInitPromise;
+}
+
+/**
+ * Returns 'Bearer <token>' for all protected owner requests.
+ * Throws a clear, descriptive Error if unable to obtain an access token.
+ */
+export async function getRequiredOwnerAuthHeader(): Promise<string> {
+  const { token } = await getOrInitOwnerSession();
+  if (!token) {
+    throw new Error('Unable to establish an authenticated owner session. Please refresh the page.');
+  }
+  return `Bearer ${token}`;
 }
 
 /**
@@ -68,19 +155,10 @@ export async function createSession(
       };
     }
 
+    // Ensure owner session is initialized ONCE and retrieved
+    const { token } = await getOrInitOwnerSession();
+
     if (isSupabaseConfigured && supabase) {
-      let {
-        data: { session: authSession },
-      } = await supabase.auth.getSession();
-
-      if (!authSession) {
-        const { data: anonData, error: anonErr } = await supabase.auth.signInAnonymously();
-        if (anonErr || !anonData?.session) {
-          return { session: null, error: new Error(anonErr?.message || 'Failed to establish anonymous owner session.') };
-        }
-        authSession = anonData.session;
-      }
-
       const { data, error } = await supabase.rpc('rpc_owner_create_session', {
         p_title: params.title.trim(),
         p_subject_name: params.subject_name.trim(),
@@ -99,14 +177,12 @@ export async function createSession(
       return { session: data as unknown as Session, error: null };
     }
 
-    const authHeader = await getClientAuthHeader();
-
     // Server-side proxy call fallback (local / test mode)
     const res = await fetch('/api/sessions/create', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(authHeader ? { Authorization: authHeader } : {}),
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(params),
     });
@@ -159,6 +235,8 @@ export async function fetchSession(
   sessionId: string
 ): Promise<{ session: Session | null; error: Error | null }> {
   try {
+    const authHeader = await getRequiredOwnerAuthHeader();
+
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase
         .from('sessions')
@@ -166,32 +244,43 @@ export async function fetchSession(
         .eq('id', sessionId)
         .single();
 
-      if (error) {
-        return { session: null, error: new Error(error.message) };
+      if (!error && data) {
+        return { session: data as Session, error: null };
       }
-
-      return { session: data as Session, error: null };
     }
 
-    // Default mock response when unconfigured for dev inspection
-    return {
-      session: {
-        id: sessionId,
-        owner_id: 'sample-owner',
-        title: 'Workshop Assessment',
-        subject_name: 'Alex Morgan',
-        description: 'Team Johari Exercise',
-        expected_participants: 5,
-        collect_participant_names: false,
-        allow_small_sample_results: false,
-        status: 'draft',
-        created_at: new Date().toISOString(),
-        self_assessment_submitted_at: null,
-        expires_at: null,
-        finalized_at: null,
+    // Server-side proxy call fallback
+    const res = await fetch(`/api/sessions/${sessionId}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader,
       },
-      error: null,
+    });
+
+    const json = await res.json();
+    if (!res.ok) {
+      return { session: null, error: new Error(json.error || 'Failed to load session details.') };
+    }
+
+    const raw = json.session || {};
+    const normalizedSession: Session = {
+      id: raw.session_id || raw.id || sessionId,
+      owner_id: raw.owner_id || '',
+      title: raw.title || '',
+      subject_name: raw.subject_name || '',
+      description: raw.description ?? undefined,
+      expected_participants: raw.expected_participants || 5,
+      collect_participant_names: Boolean(raw.collect_participant_names),
+      allow_small_sample_results: Boolean(raw.allow_small_sample_results),
+      status: raw.status || 'draft',
+      created_at: raw.created_at || new Date().toISOString(),
+      self_assessment_submitted_at: raw.self_assessment_submitted_at ?? null,
+      expires_at: raw.expires_at ?? null,
+      finalized_at: raw.finalized_at ?? null,
     };
+
+    return { session: normalizedSession, error: null };
   } catch (err) {
     return { session: null, error: err as Error };
   }
@@ -215,7 +304,7 @@ export async function submitSelfAssessmentAndOpen(
       };
     }
 
-    const authHeader = await getClientAuthHeader();
+    const authHeader = await getRequiredOwnerAuthHeader();
 
     const payload = {
       adjective_ids: uniqueIds,
@@ -245,7 +334,7 @@ export async function submitSelfAssessmentAndOpen(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(authHeader ? { Authorization: authHeader } : {}),
+        Authorization: authHeader,
       },
       body: JSON.stringify(payload),
     });
@@ -369,7 +458,7 @@ export async function reissueInvite(
   oldInviteId: string
 ): Promise<{ invite: ReissueInviteResult | null; error: Error | null }> {
   try {
-    const authHeader = await getClientAuthHeader();
+    const authHeader = await getRequiredOwnerAuthHeader();
 
     const payload = {
       session_id: sessionId,
@@ -396,7 +485,7 @@ export async function reissueInvite(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(authHeader ? { Authorization: authHeader } : {}),
+        Authorization: authHeader,
       },
       body: JSON.stringify(payload),
     });
@@ -419,7 +508,7 @@ export async function bulkReissueUnusedInvites(
   sessionId: string
 ): Promise<{ result: BulkReissueResult | null; error: Error | null }> {
   try {
-    const authHeader = await getClientAuthHeader();
+    const authHeader = await getRequiredOwnerAuthHeader();
 
     const payload = {
       session_id: sessionId,
@@ -445,7 +534,7 @@ export async function bulkReissueUnusedInvites(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(authHeader ? { Authorization: authHeader } : {}),
+        Authorization: authHeader,
       },
       body: JSON.stringify(payload),
     });
@@ -479,7 +568,7 @@ export async function finalizeSession(
   sessionId: string
 ): Promise<{ result: FinalizeSessionResult | null; error: Error | null }> {
   try {
-    const authHeader = await getClientAuthHeader();
+    const authHeader = await getRequiredOwnerAuthHeader();
 
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.rpc('rpc_owner_finalize_session', {
@@ -497,7 +586,7 @@ export async function finalizeSession(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(authHeader ? { Authorization: authHeader } : {}),
+        Authorization: authHeader,
       },
     });
 
@@ -564,7 +653,7 @@ export async function fetchSessionDashboard(
   sessionId: string
 ): Promise<{ metrics: DashboardMetrics | null; error: Error | null }> {
   try {
-    const authHeader = await getClientAuthHeader();
+    const authHeader = await getRequiredOwnerAuthHeader();
 
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.rpc('rpc_owner_get_dashboard', {
@@ -582,7 +671,7 @@ export async function fetchSessionDashboard(
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
-        ...(authHeader ? { Authorization: authHeader } : {}),
+        Authorization: authHeader,
       },
     });
 
@@ -605,7 +694,7 @@ export async function fetchSessionResults(
   sessionId: string
 ): Promise<{ snapshot: FinalizedResultsSnapshot | null; error: Error | null }> {
   try {
-    const authHeader = await getClientAuthHeader();
+    const authHeader = await getRequiredOwnerAuthHeader();
 
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.rpc('rpc_owner_get_results', {
@@ -623,7 +712,7 @@ export async function fetchSessionResults(
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
-        ...(authHeader ? { Authorization: authHeader } : {}),
+        Authorization: authHeader,
       },
     });
 

@@ -164,6 +164,32 @@ export const SelfAssessmentPage: React.FC = () => {
     );
   }
 
+  if (!session && errorMessage) {
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-16 space-y-6 text-center">
+        <div className="w-12 h-12 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+          <AlertCircle className="w-6 h-6 text-rose-600" aria-hidden="true" />
+        </div>
+        <div className="space-y-2">
+          <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
+            Unable to Load Assessment
+          </h2>
+          <p className="text-sm text-slate-600 max-w-lg mx-auto leading-relaxed">
+            {errorMessage}
+          </p>
+        </div>
+        <div className="pt-4 flex items-center justify-center gap-3">
+          <Button variant="secondary" onClick={() => window.location.reload()}>
+            <span>Retry Connection</span>
+          </Button>
+          <Button variant="primary" onClick={() => navigate('/create')}>
+            <span>Create New Assessment</span>
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   // If session is already open or finalized, self-assessment is immutable
   if (session && session.status !== 'draft') {
     return (
