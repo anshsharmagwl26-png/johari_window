@@ -5,6 +5,7 @@ import { AdjectiveChip } from '../components/common/AdjectiveChip';
 import { SelectionCounter } from '../components/common/SelectionCounter';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { ProgressBar } from '../components/common/ProgressBar';
+import { Footer } from '../components/common/Footer';
 
 describe('Design System Shared Components', () => {
   describe('AdjectiveChip', () => {
@@ -100,6 +101,16 @@ describe('Design System Shared Components', () => {
       expect(bar.getAttribute('aria-valuenow')).toBe('3');
       expect(bar.getAttribute('aria-valuemax')).toBe('6');
       expect(screen.getByText(/50% \(3\/6\)/i)).toBeDefined();
+    });
+  });
+
+  describe('Footer', () => {
+    it('renders Johari branding, disclaimer, and developer attribution', () => {
+      render(<Footer />);
+      expect(screen.getByText('Johari Window Assessment')).toBeDefined();
+      expect(screen.getByText(/Canonical 55-Adjective Workshop Model/i)).toBeDefined();
+      expect(screen.getByText(/Made with/i)).toBeDefined();
+      expect(screen.getByText(/Ansh Sharma/i)).toBeDefined();
     });
   });
 });

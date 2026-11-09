@@ -603,8 +603,8 @@ async function startServer() {
     });
   }
 
-  // Export app for test suites; start listening if executed directly
-  if (process.env.NODE_ENV !== 'test') {
+  // Export app for test suites and Vercel serverless functions; start listening in standalone server mode
+  if (process.env.NODE_ENV !== 'test' && !process.env.VERCEL) {
     app.listen(port, '0.0.0.0', () => {
       console.log(`Server listening on port ${port} (mode: ${isProduction ? 'production' : 'development'})`);
     });
