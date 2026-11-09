@@ -1,0 +1,329 @@
+JOHARI WINDOW APPLICATION — STAGED EXECUTION PROMPTS
+Version 4 companion to Johari_Window_Master_Specification_v4.txt
+
+HOW TO USE THIS FILE
+
+1. Give the coding agent both files:
+   - Johari_Window_Master_Specification_v4.txt (authoritative product, data, privacy, security, and acceptance specification)
+   - Johari_Window_Staged_Execution_Prompts_v4.txt (this file; one stage at a time)
+2. Start with Stage 1. Paste only that stage prompt into the coding agent.
+3. Do not ask the agent to execute all stages in one giant pass.
+4. At the end of each stage, require a checkpoint report and wait until you decide to provide the next stage prompt.
+5. The master specification overrides any ambiguity in a stage prompt. If a stage prompt appears to conflict with the master, follow the master and report the conflict.
+6. The agent must inspect the existing repository before editing. It must preserve working code and migrations.
+7. The agent must never claim that an external service, deployment, browser, or database test passed unless it actually ran and observed that test.
+
+GLOBAL INSTRUCTION TO INCLUDE WITH EVERY STAGE
+
+You are implementing the Johari Window application described in Johari_Window_Master_Specification_v4.txt. Read the complete master specification before acting. Treat it as the single source of truth. Inspect the existing repository and preserve working functionality. Work only on the stage specified below. Do not silently skip acceptance criteria, fake integrations, hardcode assessment results, expose secrets, or claim unexecuted tests passed. Make implementation decisions autonomously when the master specification already provides the answer. If credentials or external access are missing, build and test everything possible without them, identify the exact blocker, and do not fabricate success. At the end, run relevant tests and produce the checkpoint report specified at the bottom of this file.
+
+============================================================
+STAGE 1 — REPOSITORY INSPECTION, FOUNDATION, AND DESIGN SYSTEM
+============================================================
+
+PROMPT:
+
+Execute Stage 1 only.
+
+1. Inspect the complete existing project: framework, package manager, scripts, dependencies, routing, styles, components, environment configuration, Supabase setup, tests, and current git status if available.
+2. Before changing files, summarize the current architecture and identify what can be reused. Do not overwrite working components or configuration unnecessarily.
+3. Establish or adapt the required architecture: React + TypeScript + Vite, Tailwind CSS, React Router, shadcn/ui where appropriate, and a maintainable feature-based folder structure. If the project already uses an equivalent stack, preserve it and explain the equivalence.
+4. Configure the owner authentication UX using Supabase Auth email magic link/email OTP by default. Do not require Google OAuth credentials. Either initialize and run the local Supabase stack in Stage 1 so the auth guard can be connected and tested, or explicitly label the owner-auth guard as a non-functional stub pending Stage 2. Never imply a stub is authenticated or production-ready.
+5. Implement the route skeletons exactly as specified in the master specification: `/`, `/create`, `/assessment/:sessionId`, `/invite`, `/dashboard/:sessionId`, `/results/:sessionId`, and `/join`. Protect owner routes. Participant routes must not require owner login.
+6. Establish a consistent, responsive design system and shared components: navbar, footer, buttons, cards, form controls, adjective chip states, selection counter, progress bar, loading skeleton, empty/error states, and confirmation dialog.
+7. Add accessibility foundations immediately: semantic structure, keyboard focus, button states, `aria-pressed` support for adjective chips, and non-colour-only state communication.
+8. Add `.env.example` containing variable names only. Never add real secrets. Keep browser publishable keys separate from server-only secret keys.
+9. Set up Vitest and Playwright configuration if the repository supports them. Do not install unnecessary dependencies if equivalents already exist.
+10. Add basic route/render and component tests. Do not create fake backend data to imply the complete workflow works.
+
+STAGE 1 ACCEPTANCE:
+- Existing project was inspected before changes.
+- Routes exist and render appropriate real page shells.
+- Protected owner pages show the real Supabase auth state when local Supabase is initialized; otherwise the guard is visibly labelled as a non-functional stub pending Stage 2 and is not represented as security enforcement.
+- Responsive design tokens/components exist.
+- Accessibility baseline is in place.
+- `.env.example` has placeholders only.
+- Tests and build/typecheck run, or exact environment blockers are documented.
+
+Do not implement the database schema or participant workflow in this stage. Stop after the checkpoint.
+
+============================================================
+STAGE 2 — DATABASE, MIGRATIONS, SEED DATA, RLS, AND RPC CONTRACTS
+============================================================
+
+PROMPT:
+
+Execute Stage 2 only. Re-read the schema and security sections of the master specification.
+
+1. Inspect existing Supabase project configuration, migrations, database schema, extensions, API-exposed schemas, and RLS policies. Preserve existing working objects and create additive migrations where possible.
+2. Implement the complete schema from the master specification, including sessions, adjectives, self-assessment responses, participant invitations, participants, adjective responses, session results, and short-lived rate-limit storage if needed.
+3. Ensure session-owned rows cascade on hard deletion. Do not add `deleted` status or `deleted_at` soft-delete behavior.
+4. Add database constraints, indexes, unique keys, composite foreign keys, and session-scoped integrity checks.
+5. Seed exactly the 55 workshop-specific adjective entries from the master specification. De-duplicate the five repeated print entries. Preserve `Lamed` exactly as shown in the photograph; do not silently correct it. Assert exactly 55 unique IDs, unique display text, and sort orders 1–55.
+6. Implement default-deny RLS and least-privilege grants. Keep sensitive response and token-hash tables out of the browser's direct read path. Prefer a non-exposed private schema for internal tables where practical.
+7. Create narrowly scoped database functions/RPC contracts for:
+   - owner session creation and self-assessment/open transition;
+   - owner invitation issue/reissue/revoke operations;
+   - participant token validation metadata lookup (read-only);
+   - participant submission (service/secret-key path; must not rely on `auth.uid()`);
+   - owner dashboard/result reads;
+   - owner finalization;
+   - owner hard deletion;
+   - safe progress Broadcast emission if implemented in the database. Include a normalized `session_result_adjectives` snapshot table with exactly 55 rows per finalized session, one row per adjective, a single quadrant assignment, and feedback_count.
+8. Separate owner-JWT RPCs from participant secret/service-role RPCs. Owner functions must verify `auth.uid()` and session ownership. Participant functions must validate token digest and state and must not assume `auth.uid()` is populated.
+9. Any SECURITY DEFINER function must use `search_path = ''`, fully qualify objects, revoke broad EXECUTE grants, and grant only intended roles.
+10. Add pgTAP or equivalent SQL/integration tests for RLS, foreign keys, constraints, cross-session isolation, ownership, and function permissions. Include at least two owners and an unauthenticated role.
+11. Do not claim the database is production-ready without running the migrations and tests against an actual local or linked Supabase database.
+
+STAGE 2 ACCEPTANCE:
+- Migrations apply cleanly.
+- Exactly 55 adjectives are seeded and verified.
+- RLS blocks unauthorized access.
+- Sensitive tables/token hashes are not readable by browser roles.
+- Owner and participant RPC contracts have distinct auth semantics.
+- Hard-delete cascade is verified.
+- SQL/RLS tests pass or blockers are documented precisely.
+
+Do not build the complete UI workflow in this stage. Stop after the checkpoint.
+
+============================================================
+STAGE 3A — SESSION CREATION, SELF-ASSESSMENT, AND ATOMIC OPEN/INVITATION ISSUANCE
+============================================================
+
+PROMPT:
+
+Execute Stage 3A only. Re-read Phase A, Phase B, the invitation-issuance section of Phase C, and the related database/security rules in the master specification.
+
+1. Implement authenticated owner session creation with server-side limits: expected participants 1–50, maximum 20 non-finalized sessions per owner by default, enforced transactionally under concurrent requests. Persist all Phase A settings. When `expected_participants` is below five and low-sample opt-in is off, warn that finalization will require at least five responses and offer the explicit opt-in with its acknowledgement. The owner RPC must reject enabling the flag unless the acknowledgement is affirmatively supplied in the same request.
+2. New sessions must start in `draft`. Do not create or return invitation tokens during session creation.
+3. Implement the database-backed 55-adjective self-assessment selector with 5–7 selections, deduplication, live counter, server validation, and submission confirmation.
+4. Make the self-assessment immutable once the session opens.
+5. On self-assessment submission, atomically save the self-assessment, generate the initial invitation batch equal to `expected_participants`, insert only token hashes, and transition draft → open. If any step fails, none of the transition may commit.
+6. Generate each token server-side using 32 cryptographically secure random bytes, encode as base64url without padding, and store only its SHA-256 digest. Use the owner's JWT for the owner-authenticated RPC; it must verify `auth.uid()` and ownership. Keep plaintext tokens only in Edge Function memory and return each exactly once in the successful response.
+7. Return complete `/invite#<token>` URLs to the owner after the atomic open transition. Set `Referrer-Policy: no-referrer` and `Cache-Control: no-store`; do not load third-party analytics/scripts on invitation pages. Never log/store plaintext tokens or put them in URL paths or query strings.
+
+STAGE 3A ACCEPTANCE:
+- Owner can create an authenticated draft session.
+- Self-assessment uses the canonical database bank and enforces exactly 5–7 distinct adjectives.
+- Self-assessment submission atomically opens the session and issues the initial invitation batch.
+- Session creation itself issues no invitations.
+- Tokens are 256-bit, stored only as SHA-256 digests, and returned plaintext once.
+- Self-assessment cannot be edited after the session opens.
+- A target below five produces the required create-form warning and explicit opt-in offer.
+- Concurrent session creation cannot exceed the per-owner cap.
+
+Stop after the checkpoint.
+
+============================================================
+STAGE 3B — INVITATION ENTRY, READ-ONLY VALIDATION, AND PARTICIPANT SUBMISSION
+============================================================
+
+PROMPT:
+
+Execute Stage 3B only. Re-read the participant workflow and token/security rules in the master specification. Assume Stage 3A has completed and has been verified.
+
+10. Implement `/invite` token extraction from the URL fragment and `/join` accepting only a complete invitation URL or the complete raw 256-bit token. Do not support short numeric or alphanumeric codes.
+11. Implement read-only token validation through an HTTPS POST body. Hash the token server-side with SHA-256. GET, link preview, validation, and page refresh must never consume an invitation. Keep the fragment until successful submission; remove it only after success. Do not store tokens in localStorage, sessionStorage, IndexedDB, or cookies.
+12. Implement participant submission through a server-side Edge Function and atomic participant RPC. The Edge Function validates payload shape; the database transaction rechecks token digest, invitation/session state, database-time session expiry, 5–7 valid distinct adjective IDs, and name-collection rules; it inserts participant/responses and consumes the invitation in one transaction. Participant RPCs using the service/secret key must not depend on `auth.uid()`.
+13. Use row locks and a consistent lock order. Two concurrent submissions using the same invitation must result in exactly one success. Different valid invitation tokens must be able to submit concurrently without corrupting data.
+14. Apply configurable rate limits to validation and submission. Bucket keys must be HMAC-SHA-256 of the request IP and/or token digest using a server-only secret, with a short TTL. Never store raw IPs, raw tokens, or plain unsalted hashes of IP addresses.
+15. Never claim that individual links prove distinct real-world people. The app guarantees single use per token only unless separately verified identity is implemented and tested.
+
+STAGE 3B ACCEPTANCE:
+- `/invite` and `/join` accept only complete token-based invitations.
+- Validation and link previews are read-only; refresh works before submission.
+- Participant submissions persist atomically and each invitation can succeed once only.
+- Participant names are requested/stored only when enabled.
+- Session expiry uses database time and cannot be bypassed by changing a client clock.
+- Multi-connection or parallel HTTP tests prove same-token single-success behavior and safe different-token concurrency.
+- Rate limiting uses short-lived server-secret HMAC bucket keys.
+
+Stop after the checkpoint.
+
+============================================================
+STAGE 3C — INVITATION REISSUE, BULK RECOVERY, AND ISSUANCE CAPS
+============================================================
+
+PROMPT:
+
+Execute Stage 3C only. Re-read invitation recovery and cap rules in the master specification. Assume Stage 3A and 3B have completed and have been verified.
+
+8. Implement single-invitation recovery: the owner may revoke an unused `issued` invitation and mint a replacement. Store only the new token hash and return the new plaintext URL once. Used invitations cannot be reissued. The old token must fail immediately.
+9. Enforce the invitation caps transactionally: at most 50 currently active issued invitations and at most 200 total invitation records ever created per session, including revoked/replaced records. Implement bulk recovery that atomically revokes and replaces all currently issued-but-unused invitations. If the full replacement batch would exceed either cap, reject the operation without partially revoking or issuing anything. Replacements count against the lifetime cap. Do not recover or reconstruct old plaintext tokens.
+
+STAGE 3C ACCEPTANCE:
+- Single reissue revokes the old token and returns a new one exactly once.
+- Bulk recovery is all-or-nothing and recovers all currently unused invitations.
+- Used invitations cannot be reissued.
+- Active count never exceeds 50; lifetime token-record count never exceeds 200.
+- Lost issuance-response recovery does not expose or reconstruct old plaintext tokens.
+
+Stop after the checkpoint.
+
+============================================================
+STAGE 6 — JOHARI CALCULATION ENGINE AND FREQUENCY TESTS
+============================================================
+
+PROMPT:
+
+Execute Stage 6 only. Re-read the mathematics, test vector, adjective bank, and authoritative database calculation requirements in the master specification.
+
+1. Implement the TypeScript calculation engine as a pure, reusable reference implementation over stable adjective IDs. It must not call the database, mutate input, depend on UI state, or use fuzzy matching. It is not authoritative for finalized results.
+2. Implement the authoritative PostgreSQL calculation inside the finalization transaction, deriving U = all 55 seeded adjective IDs; S = the subject selection; and P = the union of all valid committed participant selections. The finalization transaction must save exactly one quadrant assignment and feedback frequency per adjective, from committed rows.
+3. Calculate Open = S ∩ P; Blind = P − S; Hidden = S − P; Unknown = U − (S ∪ P) in PostgreSQL. Mirror the same calculation in TypeScript only for reference/parity tests and optional UI-side checks.
+4. Compute frequency for every adjective as the number of distinct submitted participants who selected it. Frequency must not affect quadrant membership.
+5. Assert that each quadrant is pairwise disjoint and their union is exactly U. Every adjective must appear exactly once.
+6. Implement the exact test vector from the master specification against BOTH PostgreSQL and TypeScript. The database integration-test session must set `allow_small_sample_results = true` and include the explicit test-fixture acknowledgement because the vector contains only two feedback participants. Assert that both implementations return identical quadrant assignments and frequencies. Then run the same test with the production threshold disabled and verify finalization is rejected for fewer than five participants.
+   - Subject: Able, Caring, Clever, Happy, Kind.
+   - Participant 1: Able, Caring, Brave, Friendly, Happy.
+   - Participant 2: Clever, Kind, Brave, Calm, Friendly.
+   - Open: Able, Caring, Clever, Happy, Kind.
+   - Blind: Brave, Friendly, Calm.
+   - Hidden: empty.
+   - Unknown: exactly the other 47 adjectives.
+   - Frequencies: Able 1, Caring 1, Brave 2, Friendly 2, Happy 1, Clever 1, Kind 1, Calm 1.
+7. Add property/invariant tests for all quadrants populated, empty quadrants, full overlap, no overlap, one participant, many participants, duplicate IDs, invalid IDs, and deterministic ordering. Test the PostgreSQL and TypeScript implementations for parity.
+8. Add a clear test for zero feedback submissions: the engine may calculate a pure set result for unit-testing purposes, but the application finalization workflow must reject zero submissions.
+9. Keep presentation sorting deterministic, preferably by canonical adjective sort_order.
+
+STAGE 6 ACCEPTANCE:
+- All exact expected sets/frequencies match.
+- Invariants pass for every test.
+- Engine has no dependency on React, Supabase, or browser APIs.
+- No fabricated result arrays are used in production paths.
+
+Stop after the checkpoint.
+
+============================================================
+STAGE 7 — OWNER DASHBOARD, PROGRESS, EXPIRY, AND FINALIZATION
+============================================================
+
+PROMPT:
+
+Execute Stage 7 only. Re-read Phase E, Phase F finalization/privacy rules, and database security rules in the master specification.
+
+1. Build the owner-only dashboard using authorized server DTOs, not direct browser reads of sensitive tables.
+2. Display expected target, active invitations, completed responses, remaining target, revoked/replaced invitations where useful, status, and session expiry. If name collection is enabled, show a Responded list of participant names alphabetically only; do not associate names with adjective selections, invitation IDs, or timestamps. If disabled, no name is requested or stored and no Responded list is shown.
+3. Keep these metrics distinct: invitation records ever issued, active invitations, completed responses, and unfilled expected target.
+4. Implement copy/share/reissue/revoke/additional-invitation actions and owner-controlled session-expiry extension. Never imply an old plaintext token can be recovered.
+5. Use database time for session expiry. Expiry blocks participants but does not block owner dashboard access or finalization.
+6. Implement a private Realtime Broadcast channel scoped to the session. RLS on `realtime.messages` must authorize only the authenticated owner. Broadcast counts/status only. Do not use Postgres Changes on invitation, participant, or response tables.
+7. If correct private Broadcast authorization cannot be implemented and tested, use authenticated polling instead. Security takes precedence over realtime convenience.
+8. Implement finalization as one atomic owner transaction: verify JWT/ownership, lock session row, verify open state and at least one response, enforce the minimum five-response policy unless the owner has explicitly enabled low-sample results either at creation or later while the session is open, compute and store final results/frequencies, set finalized_at using database time, change status to finalized, and revoke all remaining issued invitations.
+9. If fewer than five responses and low-sample opt-in is false, block finalization and explain how to collect more feedback. The owner may enable `allow_small_sample_results` at creation or later from the dashboard while the session is `open`, with the same explicit acknowledgement; the owner RPC must reject enabling unless the acknowledgement is affirmatively supplied in that request. Enabling/disabling while open must be owner-authenticated and persisted. If opt-in is true, allow finalization with at least one response and set a persistent warning for dashboard, results, and PDF. When `expected_participants` is below five, the create form must warn that at least five responses will be required unless the owner opts in.
+10. A submission racing with finalization must commit wholly before finalization or be rejected after it. Never include partial data.
+11. Add integration tests for early finalization, zero-response rejection, low-sample opt-in at creation and while open, disabling the opt-in while open, session expiry, and concurrent submission/finalization behavior. Use a multi-connection harness (Vitest with parallel DB connections or parallel Edge Function HTTP calls) for submission racing finalization; pgTAP alone cannot exercise real concurrency.
+
+STAGE 7 ACCEPTANCE:
+- Dashboard metrics reflect actual database state.
+- Unauthorized owners cannot read another owner's dashboard.
+- Realtime payloads contain only allowed counts/status and non-owners cannot subscribe.
+- Expiry is based on database time.
+- Finalization is atomic and locks the session.
+- Unused invitations are invalidated upon finalization.
+- Privacy thresholds work as specified.
+
+Stop after the checkpoint.
+
+============================================================
+STAGE 8 — RESULTS UI, PDF/PNG EXPORT, AND ACCESSIBILITY
+============================================================
+
+PROMPT:
+
+Execute Stage 8 only. Re-read the result and privacy sections in the master specification.
+
+1. Build the owner-only finalized results page. Block access until status is finalized. Do not create public result links.
+2. Load the saved result snapshot from authorized server output. Do not recalculate from frontend arrays or hardcode the example test result.
+3. Render a genuine equal-sized 2×2 grid in the prescribed order: Open top-left, Blind top-right, Hidden bottom-left, Unknown bottom-right.
+4. Preserve equal quadrant geometry. Because Unknown may contain many adjectives, make its internal list scrollable/collapsible with a clear Show All/Show Less control and visible count.
+5. Include quadrant descriptions, adjective chips, quadrant counts, participant count, and aggregate feedback frequency where permitted.
+6. Add persistent low-sample warnings when fewer than five responses were used after explicit opt-in. Do not call the output anonymous or imply five responses guarantees anonymity.
+7. Build PDF export and optionally PNG export. Sharing means the owner downloads a file and manually shares it. No public/revocable web share link in this version.
+8. Exports must never contain participant names, individual response rows, invitation details, raw tokens, or private identifiers. Include the privacy/methodology note and the small-sample warning when applicable.
+9. Add accessible semantic headings, keyboard interaction, visible focus, readable contrast, and state communication beyond color.
+10. Test results page refresh, owner authorization, empty quadrant rendering, large Unknown lists, mobile layout, and PDF content/redaction.
+
+STAGE 8 ACCEPTANCE:
+- Results match the stored database snapshot.
+- All 55 adjective IDs fall into exactly one quadrant.
+- Grid labels/order remain correct on desktop and mobile.
+- Unknown list remains usable without changing quadrant geometry.
+- PDF/PNG export works and excludes sensitive participant-level data.
+
+Stop after the checkpoint.
+
+============================================================
+STAGE 9 — SECURITY REVIEW, AUTOMATED QA, AND CROSS-BROWSER TESTS
+============================================================
+
+PROMPT:
+
+Execute Stage 9 only. Treat this as an adversarial test pass, not a feature-building pass. Re-read all security requirements in the master specification.
+
+1. Run all unit tests, type checks, lint, build, database migration tests, pgTAP/RLS tests, and Playwright end-to-end suites.
+2. Test with at least two separate owner accounts, a signed-out browser context, and multiple participant token contexts.
+3. Attempt URL tampering, cross-session IDs, reused tokens, revoked/expired tokens, brute-force/rate-limit abuse, unauthorized RPC calls, direct table access, and result access before finalization.
+4. Verify owner RPCs receive the correct user JWT and check `auth.uid()`. Verify participant service/secret-key RPCs do not depend on `auth.uid()`.
+5. Verify no publishable client configuration contains a secret/service-role key. Search source, build artifacts, logs, and environment examples for accidental secret leakage.
+6. Verify raw participant rows, participant names, token hashes, adjective IDs, frequencies, and response payloads never appear in Realtime progress messages.
+7. Verify invitation tokens are absent from paths, query strings, referrers, analytics, logs, and persistent browser storage. Confirm GET/preview/validation never consumes tokens and refresh remains possible before submission.
+8. Use a multi-connection harness, not pgTAP alone, to verify: same-token double submit produces exactly one success; submission racing finalization is either fully committed before finalization or rejected afterward; and concurrent session creation cannot exceed the per-owner cap. Also verify different tokens can submit concurrently without data corruption.
+9. Verify hard delete cascades every associated live database row and storage object, if any. State provider backup-retention limitations honestly. Verify no `participant_invites.expires_at` column exists and all invitation expiry decisions use `sessions.expires_at` with database time.
+10. Use Playwright across Chromium, Firefox, and WebKit when installed/configured. Test responsive viewports for mobile/tablet/desktop. Do not describe viewport emulation as a physical-device test.
+11. If deployment credentials and a deployed URL are available, perform a true separate-device/browser smoke test; otherwise mark it as not tested and provide the exact missing setup.
+12. Fix root causes and rerun the affected tests. Do not mute failing tests or weaken security assertions to get a green build.
+
+STAGE 9 ACCEPTANCE:
+- All available test suites pass.
+- Critical security issues are fixed or explicitly blocked by missing external configuration.
+- Test results list actual commands, counts, and outcomes.
+- No unsupported claim of physical-device or production verification.
+
+Stop after the checkpoint.
+
+============================================================
+STAGE 10 — FINAL POLISH, DOCUMENTATION, AND DEPLOYMENT HANDOFF
+============================================================
+
+PROMPT:
+
+Execute Stage 10 only. Do not add new product scope unless needed to fix a defect found in earlier stages.
+
+1. Polish responsive layout, typography, interaction feedback, empty/loading/error states, and form validation without changing the proven business logic.
+2. Run a final accessibility pass on keyboard navigation, screen-reader labels, focus behavior, contrast, chip `aria-pressed` states, and quadrant semantics.
+3. Remove dead code, unused dependencies, debug output, test-only fixtures from production paths, and misleading placeholder copy.
+4. Add README documentation for local setup, Supabase setup, migrations, seed data, Auth redirect URLs, Edge Function deployment, environment variables, test commands, and deployment. Explicitly document that production owner magic-link/email OTP delivery requires configuring a custom SMTP provider; the default Supabase email sender is heavily rate-limited and is suitable only for limited development/testing. Treat custom SMTP configuration and sender-domain verification as a production blocker until confirmed.
+5. Include `.env.example` with names/placeholders only. Clearly identify which variables are browser-safe publishable values and which must be server-only secrets.
+6. Document the known limitations: one invitation token = one submission, but separate tokens do not establish separate real-world identities; anonymous name collection does not guarantee anonymity against inference; five responses is not a mathematical anonymity guarantee; `Lamed` is retained as printed pending source confirmation.
+7. Provide a final implementation matrix linking every master-spec acceptance criterion to implementation location and test evidence.
+8. Provide deployment instructions but do not claim deployment unless it was actually completed and smoke-tested.
+9. Run final build, typecheck, lint, unit, SQL/RLS, and Playwright suites. Report anything that could not be run and why.
+
+STAGE 10 ACCEPTANCE:
+- Documentation is complete enough for another developer to run the project.
+- No secrets are committed.
+- All available tests pass.
+- Remaining limitations are explicit.
+- Completion claims are backed by test evidence.
+
+Stop after the checkpoint.
+
+============================================================
+REQUIRED CHECKPOINT REPORT AFTER EVERY STAGE
+============================================================
+
+At the end of each stage, report exactly these sections:
+
+1. Stage completed: stage number and name.
+2. Repository findings: only if newly discovered or changed.
+3. Files changed: list paths and one-line purpose for each.
+4. Database changes: migrations, tables, policies, functions, seed changes; write “none” if none.
+5. Tests executed: exact commands and actual pass/fail counts.
+6. Manual verification: what was actually clicked/run and in which environment.
+7. Security/privacy implications: what was added, tested, or remains unresolved.
+8. Known blockers: exact credentials, services, permissions, or environment constraints; write “none” if none.
+9. Acceptance checklist: pass/fail/not run for each criterion in this stage.
+10. Next stage: state which stage prompt should be supplied next. Do not start it automatically unless explicitly instructed.
+
+Never claim completion based solely on generated code or a page loading. The evidence is the tests and observed behavior.

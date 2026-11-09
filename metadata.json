@@ -1,0 +1,6 @@
+{
+  "name": "Johari Window — Self-Awareness & Feedback",
+  "description": "A collaborative, privacy-respecting Johari Window assessment tool to discover blind spots, open strengths, and hidden traits with team feedback.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

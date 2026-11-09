@@ -1,0 +1,779 @@
+You are not merely a website generator. You are acting as my principal software architect, senior full-stack engineer, UI/UX designer, database engineer, QA engineer, and security reviewer.
+
+Your task is to build a complete, production-quality, collaborative Johari Window web application.
+
+This file is the MASTER SPECIFICATION and single source of truth. A separate companion file, `Johari_Window_Staged_Execution_Prompts_v4.txt`, contains one copy/paste prompt for each implementation stage. Do not attempt the entire project as one giant, unreviewed code-generation pass. Execute one stage at a time, use the master specification as the authority, run that stage's tests, record the checkpoint, and only then proceed.
+
+Your main objective is to
+Build a genuinely functional multi-user web application where:
+
+- One person creates an assessment.
+- The person selects 5–7 adjectives describing themselves.
+- After the subject submits their self-assessment, the system issues individual, unique, single-use invitation links to other people.
+- Each invited person independently selects 5–7 adjectives describing the subject.
+- All responses are saved in a persistent database.
+- The application compares the subject's selections against all other participants' selections.
+- A mathematically accurate, traditional four-quadrant Johari Window is generated automatically.
+- The subject can view, share, and download their results.
+
+The application must work across multiple devices and browsers.
+
+A beautiful interface without functioning application logic is a failed implementation.
+
+Follow these non-negotiable principles:
+
+1. Build real functionality, not mock functionality.
+2. Use a real database, not temporary frontend arrays.
+3. Never hardcode assessment results.
+4. Never simulate successful submissions.
+5. Never leave buttons without working actions.
+6. Never sacrifice data integrity for visual appearance.
+7. Never expose private participant responses.
+8. Never claim a feature is implemented until it has been tested.
+9. Preserve working functionality when making improvements.
+10. Make the application responsive from the beginning.
+
+Before implementing anything, inspect the existing project, identify its framework and current structure, and reuse working components where appropriate.
+
+Do not unnecessarily recreate or overwrite an existing working project.
+
+Use the following architecture unless the existing platform requires an equivalent alternative:
+
+- Frontend: React + TypeScript.
+- Build tool: Vite.
+- Styling: Tailwind CSS.
+- UI components: shadcn/ui where appropriate.
+- Backend: Supabase.
+- Database: PostgreSQL.
+- Authentication: Supabase Auth for session owners. Default owner sign-in: email magic link / email OTP; Google OAuth is optional only when credentials are configured. Do not invent OAuth credentials.
+- Participant access: individual 256-bit, single-use invitation tokens; no short join codes.
+- Real-time updates: Supabase Realtime private Broadcast channels carrying progress counts only. Do not subscribe the dashboard to raw response-table Postgres Changes.
+- Routing: React Router.
+- Form validation: Zod on the client plus authoritative server/database validation.
+- PDF export: a reliable client-side or server-side PDF library.
+- Server-side trust boundary: Supabase Edge Functions for owner-scoped operations, invitation validation, token issuance/reissue, participant submission, and safe dashboard/result DTOs.
+- Database transactions: PostgreSQL RPC functions for atomic owner transitions, participant submission, finalization, and deletion.
+- Automated testing: Vitest for pure logic, pgTAP or equivalent SQL integration tests for RLS/constraints/RPCs, and Playwright for end-to-end browser workflows.
+- Key handling: use the current Supabase publishable key in browser code and a secret/service-role key only in server-side Edge Function secrets. If an existing project uses legacy anon/service_role keys, preserve its working configuration while keeping privileged keys server-side. Verify current Supabase documentation before implementation.
+
+Use clean, reusable components and a maintainable folder structure.
+
+Do not put all application logic inside one component.
+
+Separate:
+- UI components.
+- Page components.
+- Database operations.
+- Authentication logic.
+- Assessment logic.
+- Validation logic.
+- Results generation.
+- Shared types and utilities.
+
+Implement these actual routes:
+
+/                         Landing page
+/create                   Create assessment (owner must sign in)
+/assessment/:sessionId    Subject self-assessment; owner only
+/invite                   Participant entry page. The raw token is supplied in the URL fragment, never in the path or query string.
+/dashboard/:sessionId    Session dashboard; owner only
+/results/:sessionId      Final Johari Window; owner only and only after finalization
+/join                     Paste a complete invitation URL or the complete 256-bit token; do not accept short numeric/alphanumeric codes.
+
+Invitation URL format:
+https://<app-domain>/invite#<base64url-encoded-256-bit-token>
+
+The browser reads the fragment and sends the token only in HTTPS POST bodies. Keep the fragment available until successful submission so a page refresh can revalidate the same invitation; after a successful submission, remove the fragment from the visible address bar with history.replaceState. The server never receives the fragment as part of the initial HTTP GET. The /join page accepts either the complete invitation URL or the raw full-length token and sends it to the same server-side validation flow. Do not add a short code mode.
+
+Every route must have a functional purpose.
+
+Support direct URL access and page refreshes.
+
+Handle invalid and expired links gracefully.
+
+Implement the following sequence exactly.
+
+PHASE A — CREATE SESSION
+
+The owner must authenticate with Supabase Auth before creating a session. Default sign-in is email magic link/email OTP. Provide clear sign-in, sign-out, expired-session, and recovery states.
+
+The user enters:
+- Subject name.
+- Assessment title.
+- Expected number of feedback participants (integer 1–50).
+- Optional description.
+- Whether participant names should be collected (default: no). When disabled, do not ask for, show a name field for, or store participant names. When enabled, collect names and make them visible only in the restricted owner dashboard Responded list described in Phase E.
+- Whether the owner explicitly permits results with fewer than five valid feedback submissions (default: no; requires a separate acknowledgement explaining the inference/privacy risk). The owner may enable this at creation or later while the session is `open`, after the same acknowledgement. If `expected_participants` is below five and the flag is off, the create form must warn that finalization will require at least five valid responses and offer the low-sample opt-in.
+- Optional session expiration date/time.
+
+Limits:
+- Maximum 50 simultaneously active invitations per session, including issued-but-unused invitations. Keep revoked/replaced invitation records for integrity, but cap total invitation-token records ever created at 200 per session (configurable server-side) to bound abuse while allowing recovery.
+- Maximum 20 non-finalized sessions per owner by default; make this limit a server-side configuration constant, not a frontend-only check. Enforce creation under a per-owner transaction/advisory lock or equivalent so concurrent create requests cannot exceed the cap.
+- `expected_participants` is a target for progress display, not an invitation hard cap; it must still be between 1 and 50.
+- Owner may issue additional invitations while fewer than 50 invitations are currently active and the 200-record lifetime token-issuance cap has not been reached. Replacements count toward the lifetime cap but not against the active-invitation cap once the old token is revoked.
+
+Create a session record with status `draft`. Do NOT create or return invitation tokens during session creation. Do not store plaintext tokens.
+
+The session creator is the subject. Keep all timestamps in UTC in storage and display them in the user's local timezone. All expiry decisions must use database/server time, never a participant device clock.
+
+Session state machine:
+- `draft` → `open`: only when the self-assessment and the initial invitation batch are committed atomically.
+- `open` → `finalized`: only through the owner finalization transaction.
+- No transition out of `finalized`.
+- Do not use a `deleted` status; deletion is a hard-delete operation.
+
+An expired open session remains `open` in storage but is effectively expired: participant validation and submission are blocked when `expires_at <= now()` using database time. The owner may still view progress, extend the expiry while the session remains open, or finalize it. Expiry must not prevent owner finalization.
+
+PHASE B — SELF-ASSESSMENT
+
+Display the complete predefined 55-adjective Johari bank listed below.
+
+Allow selection of 5–7 adjectives.
+
+Implement:
+- Clickable adjective chips.
+- Selected/unselected visual states.
+- Live selection counter.
+- Maximum selection validation.
+- Minimum selection validation.
+- Submission confirmation.
+- Persistent database storage.
+
+Do not allow duplicate adjective selections.
+
+The self-assessment is immutable once it is submitted and the session opens. Do not provide an edit action after opening; changing the self-assessment after feedback begins would bias the comparison. If the owner made a genuine setup mistake, the supported correction is to delete the session and create a new assessment, with an explicit warning that deletion is permanent.
+
+WORKSHOP-SPECIFIC JOHARI ADJECTIVE BANK — EXACTLY 55 UNIQUE WORDS
+
+Use only the following 55 unique adjectives. This is the exact workshop-specific bank transcribed from the reference image supplied by the project owner; do not describe it as the one universally canonical Luft–Ingham inventory. The printed source contains 60 visible entries because five words repeat across columns (Idealistic, Independent, Ingenious, Logical, and Organized); include each repeated word only once in the database. Do not add synonyms, replace words, or silently normalize spellings.
+
+1. Able
+2. Acceptable
+3. Adaptable
+4. Bold
+5. Brave
+6. Calm
+7. Caring
+8. Cheerful
+9. Clever
+10. Complex
+11. Confident
+12. Dependable
+13. Dignified
+14. Energetic
+15. Extroverted
+16. Friendly
+17. Giving
+18. Happy
+19. Helpful
+20. Idealistic
+21. Independent
+22. Ingenious
+23. Intelligent
+24. Introverted
+25. Kind
+26. Knowledgeable
+27. Lamed
+28. Liberal
+29. Lively
+30. Logical
+31. Loving
+32. Mature
+33. Modest
+34. Nervous
+35. Observant
+36. Organized
+37. Patient
+38. Proud
+39. Quiet
+40. Reflective
+41. Religious
+42. Responsive
+43. Searching
+44. Self-assertive
+45. Self-conscious
+46. Sensible
+47. Sentimental
+48. Shy
+49. Smart
+50. Spontaneous
+51. Tense
+52. Trustworthy
+53. Warm
+54. Wise
+55. Witty
+
+IMPORTANT SOURCE-TRANSCRIPTION NOTE:
+The supplied photograph appears to print the word "Lamed". Preserve "Lamed" exactly as shown so the implementation matches the supplied workshop source. Do not change it to "Lame", "Liberal", or another word without the project owner's explicit confirmation. Flag this as a source-transcription item for human confirmation before public release; do not silently correct it. If clarification is later provided, update the adjective bank, stable ID, seed data, and tests consistently.
+
+For database seeding, assign each adjective a stable lowercase slug ID (for example, "self-assertive" and "self-conscious"), and keep sort_order values from 1 through 55. The adjective text and ID must be unique. Every assessment UI must load this canonical database bank rather than maintaining a second hardcoded list in the frontend. Add a seed/test assertion that exactly 55 distinct adjective rows exist and that no duplicate display text or ID exists.
+
+PHASE C — INVITATION
+
+Invitation issuance timing is strict:
+- Do not generate invitations during session creation.
+- When the subject submits the self-assessment, the server generates the initial number of invitations equal to `expected_participants` and atomically saves the self-assessment, inserts only token hashes, and changes the session from `draft` to `open`.
+- The owner receives each plaintext token exactly once in the successful response and sees/copies each complete invitation URL. Generate the raw tokens and SHA-256 hashes inside the server-side Edge Function; call an owner-authenticated RPC using the owner's JWT and pass only the hashes plus self-assessment IDs. That RPC must verify auth.uid()/ownership and atomically insert the self-assessment, insert the full initial batch of hashes, and transition the session to open. Return invitation IDs from the RPC, then pair those IDs with the raw tokens held only in Edge Function memory for the one-time owner response.
+- If the transaction commits but the response is lost, the original plaintext tokens cannot be recovered. The owner must use reissue: revoke an unused invitation and mint a replacement. Also provide a bulk recovery action to revoke and reissue all currently issued-but-unused invitations after a lost batch response. Make single and bulk recovery obvious and safe.
+- An unused invitation may be revoked and replaced. A used invitation cannot be reissued.
+- The owner may issue additional invitations while the session is open, while fewer than 50 invitations are active and the 200-record lifetime token-issuance cap has not been reached.
+
+Each invitation uses at least 256 bits of cryptographically secure randomness (32 random bytes, encoded as base64url without padding). Generate tokens only server-side. Calculate a SHA-256 digest of each token and store only the digest (for example, lowercase 64-character hex or bytea). SHA-256 is appropriate because tokens have high entropy and must support indexed exact lookup; do not use bcrypt/Argon2 password hashing for these random lookup tokens.
+
+Invitation URL format is `/invite#<token>`. Never put tokens in URL paths or query strings. Set `Referrer-Policy: no-referrer` and `Cache-Control: no-store` on invitation pages/responses. Do not load third-party analytics, advertising, or external scripts on invitation pages. Never log raw tokens or token hashes.
+
+A link preview, initial GET, page refresh, or validation/preview request must NOT consume an invitation. Only a valid participant submission consumes it, in the same atomic database transaction that stores the response. `sessions.expires_at` is the only expiry field; do not add `participant_invites.expires_at`. Every invitation validation/submission checks the parent session expiry using database time.
+
+Provide:
+- One complete URL per invitation.
+- Copy-link action for each newly issued URL.
+- Native share action where supported.
+- Clear status for each invitation: issued, submitted, or revoked. Derive “expired” from expiry timestamps and “replaced” from revocation/replacement history; do not add inconsistent stored states unless the implementation has a documented need.
+- A recover/reissue action for one unused invitation that revokes the previous token and returns a newly generated token once.
+- A bulk recovery action that revokes and reissues all currently issued-but-unused invitations and returns the new URLs once.
+- A generate-additional-invitation action.
+- A note that a one-time link prevents reuse of that link, but does not prove that separate links belong to separate real-world people.
+
+If browser reload or network failure loses a plaintext link, never attempt to reconstruct it from the hash. Use the revoke-and-reissue flow.
+
+PHASE D — PARTICIPANT ASSESSMENT
+
+Participants should:
+- Open their own individual invitation link or paste the complete link/full token on `/join`.
+- See only the subject's name and assessment title, plus the minimum expiry/status information needed.
+- Enter their name only if the owner enabled name collection. If name collection is disabled, do not ask for or store a name.
+- Select 5–7 adjectives from the canonical database-backed 55-word bank.
+- Submit exactly once per invitation.
+
+Never reveal the subject's selected adjectives before submission. Never reveal another participant's selections, name-to-response mapping, invitation token, or individual response record.
+
+Token processing:
+1. The client extracts the token from the URL fragment or the `/join` input.
+2. The client sends it over HTTPS in a POST body to the invitation-validation Edge Function. Do not put the token in a GET request, path, query, analytics event, or browser storage.
+3. The Edge Function hashes it using SHA-256 and looks up the matching issued invitation. Validation is read-only and does not consume it.
+4. Return only the subject name, assessment title, session expiry/status, name-collection requirement, and other minimal UI metadata. Do not return session owner details, token hashes, responses, participant data, or aggregate results.
+5. Keep the token in the URL fragment until successful submission so a refresh can revalidate the same invitation. After successful submission, remove the fragment from the address bar with history.replaceState. Do not persist the token in localStorage, sessionStorage, IndexedDB, cookies, or logs.
+6. On submit, the Edge Function validates the payload and invokes the participant-only atomic database function. That function rechecks the token digest and invitation/session state inside the transaction, locks rows, persists the participant and responses, and marks the invitation submitted. Exactly one concurrent request may succeed.
+
+The database transaction must reject submissions for revoked, already-submitted, replaced, or unknown invitations; draft/finalized sessions; sessions whose parent session has expired according to `sessions.expires_at`; invalid adjective IDs; fewer than five or more than seven adjectives; and duplicate adjective IDs.
+
+Do not accept short invitation codes. A 256-bit token cannot reasonably be typed manually; `/join` is a paste-full-link-or-full-token convenience route, not a short-code lookup. Apply rate limits to validation and submission endpoints. A unique link does not prove a unique real-world respondent: one person could use multiple different links. Do not claim otherwise. Optional verified email/OTP respondent identity is out of scope unless explicitly implemented and tested.
+
+PHASE E — DASHBOARD
+
+Create a functional owner-only dashboard displaying:
+- Session title and subject name.
+- Expected participant target.
+- Invitations issued (including unused/revoked counts where useful).
+- Completed responses.
+- Remaining expected responses (never negative).
+- Open invitation count.
+- Submission progress.
+- Session status and expiry state.
+- Invitation management controls (only show plaintext links immediately after issuance/reissue; never pretend old links can be recovered from hashes).
+- Copy/share actions for newly generated links.
+- Generate additional invitation and revoke/reissue unused invitation actions.
+- Extend expiry while the session is open.
+- Finalize session action with a confirmation step and privacy warning when applicable.
+- Permanently delete session action with a destructive confirmation.
+- When `collect_participant_names = true`, show a “Responded” list containing only participant names, ordered alphabetically. Do not link a displayed name to adjective selections, invitation IDs, or submission timestamps. Names must not appear in results, PDFs/PNGs, or Realtime payloads.
+- When `collect_participant_names = false`, do not show a name field in participant forms and do not store participant names; do not show an empty or placeholder Responded list.
+
+Progress definitions must be explicit:
+- `expected_participants` is a target.
+- `issued_count` is the number of invitation records created, including used/revoked/replaced records for audit and cap calculations.
+- `active_invites` is the count of currently issued invitations.
+- `completed_responses` is the number of successful submissions.
+- `unfilled_target` is `max(expected_participants - completed_responses, 0)`.
+- `active_invites` and `unfilled_target` are different metrics and must not be conflated.
+
+Realtime:
+- Use a private Supabase Realtime Broadcast channel with a topic scoped to the session.
+- Authorize receive access only for the authenticated session owner using RLS policies on `realtime.messages` and the session ownership relationship.
+- Broadcast only safe progress fields such as issued_count, active_invites, completed_responses, unfilled_target, status, and updated_at.
+- Never broadcast token hashes, participant names, invitation identifiers that reveal respondent mapping, raw response rows, adjective IDs, frequency data, or the Responded list.
+- Do not subscribe to Postgres Changes for `participant_invites`, `participants`, `self_assessment_responses`, `adjective_responses`, or `session_results`.
+- If Broadcast cannot be safely configured in the current project, poll a restricted owner dashboard endpoint rather than exposing raw table changes.
+
+Do not expose incomplete results to participants. The owner dashboard may show progress, but no individual response data.
+
+PHASE F — FINAL RESULTS
+
+Only the authenticated owner may retrieve results, and only after the session has been finalized. There is no public result URL and no participant-facing results endpoint.
+
+Sharing policy:
+- Default sharing means the owner may download a PDF (and optionally a PNG) and manually share that exported file outside the application.
+- Do not create a public/revocable web share link in this version.
+- Export only the four quadrant results, counts, aggregate frequency insights where permitted, and methodology/privacy note. Never include participant names, invitation details, raw individual responses, or token information.
+- The PDF must include a small-sample warning when fewer than five responses were used under an explicitly enabled low-sample override.
+
+Privacy threshold:
+- Default minimum for finalization/result release is five valid participant submissions.
+- `allow_small_sample_results` defaults to false. The owner may enable it during creation or later from the dashboard while the session status is `open`; either action requires the same separate acknowledgement that results from fewer than five respondents can reveal or strongly imply an individual's answers and must not be described as anonymous. The owner-facing server operation must reject enabling unless that explicit acknowledgement is affirmatively supplied in the same request. The change must be owner-authenticated and persisted server-side.
+- If `expected_participants` is below five and the flag is false, the create form warns that finalization will require at least five valid responses and offers the explicit opt-in. The owner may still create the session without opting in.
+- If the flag is false, block finalization until at least five valid submissions exist. The owner can keep the session open, extend expiry, or issue additional invitations.
+- If the flag is true, allow finalization with at least one valid participant submission, but show a persistent warning on the dashboard, results page, and exported PDF whenever participant_count < 5. Do not display the label “anonymous” as a guarantee at any participant count.
+- Five is an operational small-sample threshold, not a mathematical guarantee of anonymity. Always explain that social context and knowledge of who received links can permit inference.
+- A session with zero participant submissions cannot be finalized.
+
+On finalization, lock the session row, verify owner identity and session status, verify all response integrity, apply the privacy threshold, compute results from committed database rows, save the result snapshot and frequency counts, set finalized_at using database time, change status to finalized, and revoke all still-unused invitations in one transaction. Any submission racing with finalization must either commit entirely before the finalization lock or be rejected after finalization; never partially include a response.
+
+Do not use frontend-only fabricated results.
+
+Define:
+
+U = Complete set of the 55 unique adjective IDs in the workshop-specific bank above.
+S = Set of adjective IDs selected by the subject.
+P = Union of all unique adjective IDs selected by all valid, submitted participants in this session.
+
+Calculate:
+
+OPEN AREA = S ∩ P
+BLIND AREA = P − S
+HIDDEN AREA = S − P
+UNKNOWN AREA = U − (S ∪ P)
+
+Requirements:
+- Use stable adjective IDs, never display-text matching.
+- Use exact set comparison; no fuzzy matching.
+- Eliminate duplicates.
+- Each participant contributes each adjective at most once.
+- Calculate UNKNOWN from all 55 seeded adjectives, not from submitted responses only.
+- Every adjective must belong to exactly one quadrant.
+- The four quadrants must be pairwise disjoint and their union must equal U.
+- Recalculate only during finalization from valid committed rows. Store a deterministic result snapshot for finalized sessions.
+- Build a reusable, independently testable pure TypeScript calculation function as a reference implementation for parity tests and UI-side checks only.
+- The authoritative quadrant calculation must run in PostgreSQL inside the owner finalization transaction, using committed, valid response rows. The database must calculate and persist the final quadrant assignments and feedback frequencies atomically with session finalization. Do not treat frontend or TypeScript output as authoritative.
+- Run the Stage 6 test vector against both the PostgreSQL implementation and the TypeScript reference implementation; they must produce identical quadrant assignments and frequencies. Because the vector has two feedback participants, its database integration-test session must explicitly set `allow_small_sample_results = true` and satisfy the opt-in acknowledgement in the test fixture.
+
+For each adjective, calculate the number of distinct submitted participants who selected it. Frequency is supplementary information only and must never alter quadrant classification.
+
+Example:
+Confident — 4 participants.
+Friendly — 3 participants.
+Intelligent — 2 participants.
+Brave — 1 participant.
+
+Visual results:
+- Use a genuine, traditional, equal-sized 2×2 Johari grid.
+- TOP LEFT: OPEN AREA — known to self and known to others.
+- TOP RIGHT: BLIND AREA — unknown to self but known to others.
+- BOTTOM LEFT: HIDDEN AREA — known to self but unknown to others.
+- BOTTOM RIGHT: UNKNOWN AREA — unknown to self and unknown to others.
+- Use four distinct but subtle background colors; never rely on color alone for meaning.
+- Use readable adjective chips, clear quadrant labels, descriptions, responsive sizing, empty states, and keyboard-accessible controls.
+- Preserve the correct quadrant order and labels on mobile.
+- The Unknown Area may contain most of the adjectives. Do not distort the 2×2 grid or make quadrants unequal. Keep all four quadrants equal in the primary grid; make the Unknown Area's adjective list internally scrollable or collapsible with a clear Show All/Show Less control and visible count.
+- Below the grid, show the count in each quadrant, participant response count, and permitted aggregate frequency insights.
+- Add a concise explanation that this is a reflective communication exercise, not a clinical or validated personality diagnosis.
+
+Accessibility from the beginning:
+- Adjective chips are real buttons with `aria-pressed`.
+- Full keyboard operation and visible focus states.
+- Quadrant headings are semantic and screen-reader friendly.
+- Selection is communicated through text/icon/state as well as color.
+- Meet WCAG AA contrast for text and controls.
+
+Create proper PostgreSQL tables with migrations. Use UUID primary keys where appropriate and stable text IDs for adjectives. Use database constraints for row-level invariants and atomic RPC functions for cross-row rules.
+
+Recommended logical schema (adapt existing working schema where equivalent, but preserve every invariant):
+
+sessions:
+- id (UUID primary key)
+- owner_id (UUID, foreign key to auth.users with an explicit ON DELETE policy; cascade session cleanup if owner accounts are deleted)
+- title (non-empty, length-limited)
+- subject_name (non-empty, length-limited)
+- description (nullable, length-limited)
+- expected_participants (integer 1–50)
+- collect_participant_names (boolean; default false)
+- allow_small_sample_results (boolean; default false)
+- status (draft, open, finalized only)
+- created_at (database timestamp)
+- self_assessment_submitted_at (nullable)
+- expires_at (nullable)
+- finalized_at (nullable)
+
+adjectives:
+- id (stable lowercase text slug, primary key)
+- adjective (unique display text)
+- sort_order (unique integer 1–55)
+
+self_assessment_responses:
+- session_id (foreign key to sessions with ON DELETE CASCADE)
+- adjective_id (foreign key to adjectives)
+- created_at
+- composite primary key (session_id, adjective_id)
+
+participant_invites:
+- id (UUID primary key)
+- session_id (foreign key to sessions with ON DELETE CASCADE)
+- token_hash (unique SHA-256 digest; never exposed to browser clients)
+- status (issued, submitted, revoked)
+- replaces_invite_id (nullable self-reference for reissue history; ON DELETE SET NULL)
+- unique composite key on (id, session_id)
+- created_at
+- submitted_at (nullable)
+- revoked_at (nullable)
+
+participants:
+- id (UUID primary key)
+- session_id (foreign key to sessions with ON DELETE CASCADE)
+- invite_id (unique)
+- composite foreign key (invite_id, session_id) referencing participant_invites (id, session_id) with ON DELETE CASCADE, preventing cross-session invite attachment
+- participant_name (nullable; insert a name only when `collect_participant_names = true`; when false, the field must remain NULL and the participant UI must not request a name)
+- created_at
+- submitted_at
+- unique composite key (id, session_id), for session-scoped response foreign keys
+
+adjective_responses:
+- id (UUID primary key)
+- session_id (foreign key to sessions with ON DELETE CASCADE)
+- participant_id
+- adjective_id (foreign key to adjectives)
+- created_at
+- unique constraint on (participant_id, adjective_id)
+- composite foreign key (participant_id, session_id) referencing participants (id, session_id) with ON DELETE CASCADE
+
+session_results:
+- session_id (primary key and foreign key to sessions with ON DELETE CASCADE)
+- participant_count
+- generated_at
+- calculation_version (text, to identify the calculation rules used)
+
+session_result_adjectives:
+- session_id (foreign key to session_results(session_id) with ON DELETE CASCADE)
+- adjective_id (foreign key to adjectives)
+- quadrant (enum or CHECK: open, blind, hidden, unknown)
+- feedback_count (non-negative integer counting distinct submitted participants)
+- composite primary key (session_id, adjective_id), ensuring one quadrant assignment per adjective per session
+
+Finalization must insert exactly 55 session_result_adjectives rows per session, one for every seeded adjective. The combination of the composite primary key and exact-55 invariant ensures no adjective is assigned to multiple quadrants and no adjective is omitted.
+
+rate_limit_events (or an equivalent managed rate-limiting implementation):
+- Store only short-lived keyed hashes/buckets needed for endpoint throttling; never store raw invitation tokens or raw IP addresses.
+- Expire/delete old counters automatically.
+
+Schema rules:
+- Do not use `status = deleted` or `deleted_at`; session deletion is a hard-delete operation.
+- Every session-owned child table must cascade on session deletion. Ensure all participant/invitation/response/result relations are covered by cascading foreign keys or an explicit transactional delete routine.
+- `expected_participants` is a target; active invitations may never exceed 50 and total invitation-token records (including revoked/replaced invitations) may never exceed 200.
+- A normal SQL CHECK constraint cannot reference another table to enforce `participant_name` based on the session setting. Enforce that rule in the atomic participant submission function or a trigger.
+- The 5–7 adjective cardinality rule is cross-row and must be enforced inside atomic database functions/transactions, not with a naive row-level CHECK.
+- Add indexes for owner_id, session_id, token_hash, participant_id, adjective_id, invite_id, and any fields used for status/expiry queries.
+- Seed exactly 55 unique adjective rows from the list above; assert unique IDs, unique display text, unique sort_order values from 1–55, and exact count = 55.
+- Never store plaintext invitation tokens.
+- Keep subject responses separate from participant responses.
+- Preserve individual response rows internally for accurate aggregation, but do not expose them through owner or participant APIs. The default owner output contains only safe progress counts and aggregate results.
+
+Hard deletion:
+- Owner deletion must be authenticated and transactional.
+- Delete the session row and cascade delete self responses, invitation hashes, participant rows/names, adjective responses, result snapshots, and related rate-limit/session-progress data.
+- Add an integration test that uses a privileged test connection to prove no associated rows remain after deletion.
+- Explain that database backups may follow the hosting provider's backup-retention policy; do not claim that deletion instantly erases provider-level backups. Application-level rows must be removed immediately from the live database.
+
+Database schemas and API exposure:
+- Put sensitive tables in a non-exposed `private` schema where practical, or keep them in an exposed schema with strict RLS and revoked grants. Do not expose token hashes or raw response tables through PostgREST.
+- Expose only the minimum public adjective read path and narrowly scoped owner/participant RPC or Edge Function endpoints. If a PostgREST-callable RPC wrapper must live in an exposed schema, make it a minimal wrapper with restricted EXECUTE grants; keep internal tables and helper functions in the non-exposed `private` schema where practical. Never expose the underlying sensitive tables merely to make an RPC convenient.
+- Default-deny RLS and least-privilege grants on every API-exposed table and function.
+
+I want a premium, modern SaaS-quality experience.
+
+Visual direction:
+
+- Minimalist.
+- Elegant.
+- Professional.
+- Academic yet approachable.
+- Modern typography.
+- Clean spacing.
+- Refined cards.
+- Smooth micro-interactions.
+- Responsive layouts.
+
+Use a consistent design system.
+
+Build reusable components:
+- Navbar.
+- Footer.
+- Primary button.
+- Secondary button.
+- Adjective selector.
+- Selection counter.
+- Progress bar.
+- Session card.
+- Participant status indicator.
+- Johari quadrant.
+- Results statistic card.
+- Loading skeleton.
+- Error state.
+- Confirmation dialog.
+
+Create polished loading, success, empty, and error states.
+
+Do not use excessive gradients or generic AI-generated dashboard styling.
+
+Implement:
+- Secure session ownership.
+- Secure invitation tokens.
+- Authorization checks.
+- Input validation.
+- Server-side submission validation.
+- Rate limiting where supported.
+- Database RLS.
+- Duplicate submission protection.
+- Restricted results access.
+- Protection against cross-session data leakage.
+
+A participant must never be able to access another session's data by modifying a URL.
+
+Do not assume that hiding frontend buttons is sufficient authorization.
+
+SECURITY IMPLEMENTATION RULES — REQUIRED
+
+1. Owner authentication: Supabase Auth is required. Default to email magic link/email OTP. Every owner operation must verify the caller's user JWT and session ownership in a server-side Edge Function or owner-scoped database function.
+2. Owner JWT versus privileged server calls must be separated:
+   - Owner-facing Edge Functions must validate the user's JWT and use a user-scoped Supabase client carrying that JWT when invoking owner RPCs. The database function must check `auth.uid()` and `sessions.owner_id`.
+   - Participant-token Edge Functions may use the server-only Supabase secret/service-role key for narrowly scoped privileged database work. These calls do not represent a logged-in owner; `auth.uid()` may be null. Participant-only RPCs invoked with the secret/service-role credential must NOT rely on `auth.uid()`. They must validate the SHA-256 invitation digest, invitation state, session state, expiry, and all submitted data inside the transaction.
+   - Do not mix the two call paths or write one RPC that assumes `auth.uid()` is populated for both.
+3. Enable RLS on every API-exposed table. Default to deny. Revoke default broad grants. Grant only the minimum operations needed. Sensitive tables should preferably live in a non-exposed schema.
+4. Browser clients must never select invitation token hashes, raw participant rows, self-assessment response rows, raw adjective responses, or session result snapshots directly. Return safe DTOs through authorized Edge Functions/RPCs.
+5. Participant validation endpoint: accept token only in a POST body, hash it using SHA-256 server-side, perform read-only validation, and return only subject name/title plus minimum form metadata. It must not consume the token.
+6. Participant submission endpoint: require HTTPS POST. Call a narrowly permissioned participant RPC using the server-only secret/service-role credential. The RPC must recheck the token digest, lock rows in a consistent order, verify invitation/session status and database-time expiry, validate adjective IDs and exactly 5–7 distinct selections, enforce participant-name rules, insert participant and responses, and mark the invitation submitted in one transaction. Exactly one of concurrent submissions using the same invite may succeed.
+7. Owner RPCs: use the caller's authenticated JWT, verify `auth.uid()` is not null, verify ownership inside the function, and never accept owner_id from untrusted client input as proof of ownership.
+8. SECURITY DEFINER: use only when necessary. Prefer SECURITY INVOKER. Every SECURITY DEFINER function must set `search_path = ''`, fully qualify all relation/function references, validate the caller/credential explicitly, revoke EXECUTE from PUBLIC/anon by default, and grant EXECUTE only to the intended role. Place privileged functions in a non-exposed schema where practical.
+9. Invitation token generation: use a cryptographically secure generator for 32 random bytes. Store only SHA-256 digest. Return plaintext only once to the owner at issuance/reissue. No plaintext token in logs, analytics, database, error telemetry, URL path/query, or browser persistent storage.
+10. Link safety: invitation token is in the URL fragment only. Set `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. Do not load third-party scripts on invite routes. Link preview/GET/validation must not consume an invitation. Consume only in successful atomic submission.
+11. Realtime: use private Broadcast, not raw Postgres Changes, for dashboard progress. Authorization on `realtime.messages` must permit only the owning authenticated user to receive their session topic. Broadcast only progress counts/status. Never include names, invite IDs, token hashes, adjective IDs, frequency counts, or raw response rows. Configure private channels (`private: true`) and disable public channel access for the project when feasible. If a correct private Broadcast policy cannot be proven, use owner-authenticated polling instead.
+12. Rate limiting: protect invitation validation and submission endpoints. Prefer platform/gateway throttling plus short-lived server-side counters. Derive each bucket key as HMAC-SHA-256 of the request IP and/or invitation token digest using a server-only secret that is never sent to the browser. Never use a plain unsalted hash of an IP address, and never persist raw IPs or raw tokens. Give counters a short TTL, make limits configurable, and test throttling plus legitimate shared-network behavior.
+13. Results: block until finalized. Only the authenticated owner may access results. Participants cannot read session_results. No public results route or public sharing link in this version.
+14. Expiry: use database `now()` in all validation/submission/finalization decisions. Expiry blocks participants only; it does not prevent the owner from viewing the dashboard or finalizing valid collected responses.
+15. Session deletion: implement hard delete with cascading foreign keys or a verified transaction. Do not merely set a deleted flag. Prove deletion with a privileged integration test.
+16. Privacy: explain that `collect_participant_names = false` means the app does not ask for or store participant names; it does not guarantee anonymity against social inference or link-distribution knowledge. Individual responses remain private. Do not imply that five participants mathematically guarantees anonymity.
+17. Test RLS and authorization with at least two separate owner accounts, a signed-out client, and participant token clients. A successful UI test is not proof that database access is secure.
+
+Provide a clear privacy notice, session expiration controls, and a hard-delete action for the owner. Never silently retain live database rows after deletion.
+
+Write actual tests for the assessment engine and application workflow.
+
+At minimum, test the following:
+
+SUBJECT:
+Able, Caring, Clever, Happy, Kind.
+
+PARTICIPANT 1:
+Able, Caring, Brave, Friendly, Happy.
+
+PARTICIPANT 2:
+Clever, Kind, Brave, Calm, Friendly.
+
+EXPECTED:
+
+OPEN:
+Able, Caring, Clever, Happy, Kind.
+
+BLIND:
+Brave, Friendly, Calm.
+
+HIDDEN:
+Empty.
+
+UNKNOWN:
+Exactly the other 47 adjectives not present in the subject's set or the union of participant selections, taken from the workshop-specific 55-adjective bank.
+
+EXPECTED FEEDBACK FREQUENCIES FOR THIS TEST:
+- Able: 1
+- Caring: 1
+- Brave: 2
+- Friendly: 2
+- Happy: 1
+- Clever: 1
+- Kind: 1
+- Calm: 1
+
+Frequency counts must be based on distinct submitted participants and must not alter quadrant membership.
+
+Also test:
+
+- All four quadrants populated.
+- Quadrants are pairwise disjoint and their union is exactly the 55 adjective IDs.
+- All feedback overlaps with self-assessment.
+- No feedback overlaps with self-assessment.
+- Empty quadrants.
+- One participant.
+- Multiple participants.
+- Duplicate submissions.
+- Invalid adjectives.
+- Fewer than five selections.
+- More than seven selections.
+- Session finalization with five or more responses.
+- Finalization blocked with fewer than five responses when `allow_small_sample_results` is false.
+- Explicit low-sample finalization succeeds only when the owner opted in at creation or enabled the flag later while the session was open, with the required acknowledgement; results/PDF show a persistent warning when count < 5.
+- An expected-participant target below five triggers the create-form warning and opt-in offer.
+- The owner can enable or disable the low-sample flag while the session is open; the change is authenticated, persisted, and acknowledgement-gated when enabling.
+- Unauthorized result access.
+- Page refresh.
+- Multiple concurrent submissions using different valid invitation tokens.
+- Same-token double-submit, submission racing finalization, and concurrent session creation against the per-owner cap are tested using a multi-connection harness (for example, Vitest with parallel database connections or parallel HTTP calls to the Edge Function); pgTAP alone is not sufficient to prove real concurrency behavior.
+- Two simultaneous submission attempts using the same invitation token (exactly one must succeed).
+- Opening, previewing, validating, or refreshing an invitation does not consume its token.
+- Reissuing an unused invitation revokes the old token and returns a new one; old token fails and new token succeeds exactly once.
+- Lost issuance response recovery does not reveal the original token; owner can revoke/reissue.
+- Bulk recovery revokes/reissues all currently unused invitations atomically and respects active/lifetime caps.
+- Revoked invitations and invitations belonging to sessions that have expired according to `sessions.expires_at` and database time.
+- Submission after session finalization.
+- Submission after expiry using database time, including a client clock set incorrectly.
+- Finalization attempted before any participant response.
+- Early finalization with fewer responses than expected but at least five submissions.
+- At most 50 active invitations and at most 200 total invitation-token records per session including replacements/revocations.
+- Owner isolation: one owner cannot access another owner's sessions.
+- Participant isolation: a participant cannot read another participant's name or responses.
+- No raw rows, names, adjective IDs, frequency data, or token values are present in Realtime progress payloads.
+- Realtime subscription is rejected for a non-owner and for public channels where private-only mode is configured.
+- Rate limiting rejects abusive validation/submission attempts using short-lived HMAC-SHA-256 bucket keys with a server-only secret; no plain IP hash, raw token, or raw IP is stored/logged.
+- Hard deletion cascades all session rows; verify no session, invite, participant, response, or result rows remain.
+- Invitation token never appears in server logs, browser storage, URL path/query, or referrer headers.
+- Owner JWT RPC sees the correct `auth.uid()`; participant service-key RPC does not depend on `auth.uid()`.
+- Participant name is required only when name collection is enabled; when disabled, no name input is rendered and the stored participant_name is NULL.
+- When enabled, the dashboard Responded list shows names alphabetically without response, invite-ID, or timestamp mapping; names never appear in results, exports, or Realtime.
+- The 20-active-session-per-owner cap is enforced under concurrent creation attempts using multiple concurrent connections/HTTP requests, not only sequential SQL assertions.
+- Exactly 55 unique adjective rows are seeded, including "Lamed" exactly as printed in the supplied source.
+- Invitation expiry is derived only from `sessions.expires_at`; no `participant_invites.expires_at` column exists.
+
+Do not stop after checking whether the website loads.
+
+Work in the following stages.
+
+STAGE 1 — FOUNDATION
+Inspect the project, establish architecture, install dependencies, create the design system and routes. Either initialize the local Supabase stack here or explicitly label the owner-auth guard as a stub pending Stage 2; never imply authentication is functional if it is not connected.
+
+STAGE 2 — DATABASE
+Configure Supabase, create migrations, define relationships, implement security policies and seed all 55 unique adjectives.
+
+STAGE 3A — SESSION CREATION, SELF-ASSESSMENT, AND ATOMIC OPEN/INVITATION ISSUANCE
+Implement owner session creation, self-assessment, and the atomic draft-to-open transition with initial invitation issuance.
+
+STAGE 3B — INVITATION ENTRY, VALIDATION, AND PARTICIPANT SUBMISSION
+Implement `/invite` and `/join`, read-only token validation, participant submission, concurrency protection, and rate limits.
+
+STAGE 3C — INVITATION RECOVERY AND ISSUANCE CAPS
+Implement single/bulk reissue and enforce active/lifetime invitation caps.
+
+STAGE 6 — AUTHORITATIVE JOHARI CALCULATION AND FREQUENCY PARITY
+Implement PostgreSQL finalization calculation plus the TypeScript reference implementation and verify identical results.
+
+STAGE 7 — DASHBOARD, PROGRESS, PRIVACY SETTINGS, AND FINALIZATION
+Implement participant progress, names policy, low-sample opt-in changes while open, expiry, and atomic finalization.
+
+STAGE 8 — RESULTS UI, AND PDF/PNG EXPORT
+Implement the traditional Johari grid, frequency insights, privacy messaging and export.
+
+STAGE 9 — SECURITY REVIEW AND AUTOMATED QA
+Test database security, concurrency, cross-browser behavior, rate limits, deletion, and workflow integrity.
+
+STAGE 10 — FINAL POLISH, DOCUMENTATION, AND DEPLOYMENT HANDOFF
+Finalize accessibility, UX, README, environment setup and deployment limitations.
+
+After every stage:
+- Verify that the functionality works.
+- Run the stage-specific tests and record exact commands/results.
+- Fix errors before proceeding.
+- Preserve previously completed functionality.
+- Do not introduce regressions.
+- Create/update a checkpoint note listing changed files, migrations, test results, known blockers, and next stage.
+- Do not claim cross-browser/device verification unless the relevant browsers/devices or deployed URL were actually exercised.
+
+When something fails:
+
+1. Identify the root cause.
+2. Inspect the relevant code and database behavior.
+3. Fix the underlying issue rather than hiding the error.
+4. Re-run the affected tests.
+5. Verify that existing functionality still works.
+
+Do not respond with instructions asking me to manually fix problems that you can fix yourself.
+
+If external credentials or configuration are required, tell me exactly what is needed and continue developing everything else possible.
+
+The project is complete only when:
+
+[ ] A user can create a session.
+
+[ ] The subject can select and submit 5–7 adjectives.
+
+[ ] Individual shareable invitation links are generated only when the session opens after self-assessment, and work on separate devices.
+[ ] If the issuance response is lost, an unused invitation can be revoked and reissued without recovering the old plaintext token.
+[ ] Invitation tokens appear only in URL fragments, remain available for refresh until submission, and are never consumed by GET/preview/validation.
+
+[ ] Participants can open their own links on separate devices.
+
+[ ] Participants can submit independent responses.
+
+[ ] All submissions persist in Supabase.
+
+[ ] Each respondent receives an individual single-use invitation link.
+[ ] A used, revoked, or expired invitation cannot submit again.
+[ ] Duplicate submissions using the same invitation are prevented.
+[ ] The UI accurately explains that separate links do not prove separate real-world identities unless identity verification is enabled.
+[ ] Low-sample result release follows the explicit opt-in policy and displays warnings below five participants.
+[ ] Results are not available through a public URL; sharing is via owner-downloaded PDF/PNG only.
+[ ] Session deletion is a hard delete and cascade behavior is tested.
+[ ] Realtime broadcasts progress aggregates only; raw response tables are never subscribed to.
+
+[ ] The dashboard reflects actual submission progress.
+
+[ ] The session can be finalized.
+
+[ ] All four Johari quadrants calculate correctly.
+
+[ ] The results display actual adjectives from the database.
+
+[ ] Feedback frequency is calculated correctly.
+
+[ ] Results survive page refreshes.
+
+[ ] Unauthorized access is blocked.
+
+[ ] PDF export works.
+
+[ ] The application works on mobile and desktop.
+
+[ ] No critical console, runtime, database, or security errors remain.
+
+Do not simply generate a large amount of code and declare success.
+
+Do not attempt the entire project in one unreviewed generation pass. Use the companion `Johari_Window_Staged_Execution_Prompts_v4.txt` and execute only the stage prompt explicitly supplied by the project owner. Each stage ends at its checkpoint. Do not continue to another stage automatically, even if persistent autonomous execution is available.
+
+Act as an autonomous engineering agent.
+
+Make sensible implementation decisions without repeatedly asking me unnecessary questions.
+
+Prioritize working software over impressive-looking mockups.
+
+If you must choose between visual polish and correct functionality, implement correct functionality first, then polish it.
+
+Keep me informed about:
+- What has been implemented.
+- What has been tested.
+- What remains incomplete.
+- Which external configurations I need to provide.
+
+At the end, provide:
+1. A working application preview.
+2. A summary of implemented features.
+3. Database and deployment setup instructions.
+4. Required environment variables.
+5. Test results, including Vitest, database/RLS/transaction tests, and Playwright browser tests.
+6. What was actually verified on deployed/separate-device environments versus simulated/local viewport testing.
+7. Any remaining limitations, especially identity/anonymity limitations and any source-word ambiguity around "Lamed".
+
+
+CURRENT IMPLEMENTATION REFERENCES (verify these again when coding; do not assume SDK/API details from memory):
+- Supabase Realtime Authorization: https://supabase.com/docs/guides/realtime/authorization
+- Supabase Broadcast: https://supabase.com/docs/guides/realtime/broadcast
+- Supabase database functions and SECURITY DEFINER guidance: https://supabase.com/docs/guides/database/functions
+- Supabase Edge Function authentication: https://supabase.com/docs/guides/functions/auth
+- Supabase Row Level Security: https://supabase.com/docs/guides/database/postgres/row-level-security
+
+Do not blindly copy an old SDK example. Check current Supabase docs and the installed package versions, particularly around publishable/secret keys and Edge Function authentication.
+
+Read this specification completely and confirm you have understood it. Do not begin implementation. Wait for a stage prompt from the companion file. Each stage ends at its checkpoint; do not continue to the next stage unless explicitly told to.
